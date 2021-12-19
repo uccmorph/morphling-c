@@ -62,6 +62,8 @@ class SMRLog {
   void truncate(uint64_t t_idx);
 
   Entry& entry_at(uint64_t index);
+  std::vector<Entry> get_tail_entries(uint64_t in);
+
   bool commit_to(uint64_t index);
   uint64_t curr_commit();
 
@@ -106,9 +108,16 @@ struct ReplyClientMessage {
 struct GenericMessage {
   int type;
   int to;
-  AppendEntriesMessage &append_msg;
-  AppenEntriesReplyMessage &append_reply_msg;
-  ClientProposalMessage &client_msg;
+  AppendEntriesMessage append_msg;
+  AppenEntriesReplyMessage append_reply_msg;
+  ClientProposalMessage client_msg;
+
+  GenericMessage(AppendEntriesMessage &msg, int to)
+      : type(1), to(to), append_msg(msg) {}
+  GenericMessage(AppenEntriesReplyMessage &msg, int to)
+      : type(2), to(to), append_reply_msg(msg) {}
+  GenericMessage(ClientProposalMessage &msg, int to)
+      : type(3), to(to), client_msg(msg) {}
 };
 
 class EntryVoteRecord {
@@ -123,20 +132,33 @@ public:
   bool vote(int id, uint64_t index);
 };
 
+struct SMRMessageCallback {
+  bool on_client_operation();
+  bool notify_send_append_entry(GenericMessage &&msg);
+  bool ontify_send_append_entry_reply();
+  bool on_apply();
+};
+
+struct PeerStatus {
+  uint64_t match;
+  uint64_t next;
+};
+
 class SMR {
   SMRLog m_log;
   group_t m_gid;
   int m_me;
   std::vector<int> &m_peers;
   EntryVoteRecord m_entry_votes;
-  std::vector<GenericMessage> &m_cb_msgs;
+  SMRMessageCallback m_cb;
+  std::unordered_map<int, PeerStatus> m_prs;
 
   // @return <is_safe, is_stale>
   std::tuple<bool, bool> check_safety(uint64_t prev_term, uint64_t prev_index);
   void handle_stale_entries(AppendEntriesMessage &msg);
 
 public:
-  SMR(int me, std::vector<int> &peers, std::vector<GenericMessage> &cb_msgs);
+  SMR(int me, std::vector<int> &peers, SMRMessageCallback cb);
 
   void handle_operation(ClientProposalMessage &msg);
   void handle_append_entries(AppendEntriesMessage &msg);

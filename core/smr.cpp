@@ -61,6 +61,13 @@ Entry &SMRLog::entry_at(uint64_t index) {
   return m_log[real_index];
 }
 
+std::vector<Entry> SMRLog::get_tail_entries(uint64_t in) {
+  auto gap = entry_pos(in);
+  auto start_itr = m_log.begin() + gap;
+  std::vector<Entry> res(start_itr , m_log.end());
+  return res;
+}
+
 bool SMRLog::commit_to(uint64_t index) {
   if (index > last_index()) {
     char err_msg[128];
@@ -123,9 +130,12 @@ bool EntryVoteRecord::vote(int id, uint64_t index) {
 
 // ---------------- State Machine Replication ------------------
 
-SMR::SMR(int me, std::vector<int> &peers, std::vector<GenericMessage> &cb_msgs)
-    : m_me(me), m_peers(peers), m_cb_msgs(cb_msgs) {
+SMR::SMR(int me, std::vector<int> &peers, SMRMessageCallback cb)
+    : m_me(me), m_peers(peers), m_cb(cb) {
   m_entry_votes.init(peers.size());
+  for (auto id : peers) {
+    m_prs.emplace(id, 0, 0);
+  }
 }
 
 std::tuple<bool, bool> SMR::check_safety(uint64_t prev_term,
@@ -167,10 +177,15 @@ void SMR::handle_stale_entries(AppendEntriesMessage &msg) {
 
 void SMR::handle_operation(ClientProposalMessage &msg) {
   Entry e(msg.data);
-  m_log.append(e);
+  auto last_idx = m_log.append(e);
+  m_prs[m_me].match = last_idx;
+  m_prs[m_me].next = last_idx + 1;
   for (auto rid : m_peers) {
     if (rid != m_me) {
-      send_append_entries(rid);
+      if (m_prs[rid].match != 0) {
+        m_prs[rid].next = last_idx;
+        send_append_entries(rid);
+      }
     }
   }
 }
@@ -213,7 +228,16 @@ void SMR::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from) {
 }
 
 void SMR::send_append_entries(int to) {
-
+  auto prev_idx = m_prs[to].next - 1;
+  auto prev_term = m_log.entry_at(prev_idx).epoch;
+  AppendEntriesMessage append_msg {
+    .prev_index = prev_idx,
+    .prev_term = prev_term,
+    .commit = m_log.curr_commit(),
+    .group_id = m_gid,
+    .entries = m_log.get_tail_entries(m_prs[to].next),
+  };
+  m_cb.notify_send_append_entry(GenericMessage(append_msg, to));
 }
 
 void SMR::reply_client() {}

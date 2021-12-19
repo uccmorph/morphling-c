@@ -14,6 +14,7 @@ class Morphling {
   int m_me;
   std::vector<int> m_peers;
   std::vector<SMR> m_smrs;
+  std::vector<GenericMessage> m_cb_msgs;
 
  private:
   void init_local_guidance(int key_space = DEFAULT_KEY_SPACE);
