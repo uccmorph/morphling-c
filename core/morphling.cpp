@@ -34,6 +34,9 @@ void Morphling::handle_operation(ClientProposalMessage &msg) {
     reply_guidance();
     return;
   }
+  auto group_id = calc_key_pos(msg.key_hash);
+  auto &smr = m_smrs[group_id];
+  smr.handle_operation(msg);
 
 }
 
@@ -52,4 +55,11 @@ void Morphling::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int f
     return;
   }
 
+}
+
+bool Morphling::is_valid_guidance(uint64_t epoch) {
+  if (m_guide.epoch != epoch) {
+    return false;
+  }
+  return true;
 }

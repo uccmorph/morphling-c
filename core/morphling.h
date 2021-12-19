@@ -13,6 +13,7 @@ class Morphling {
   guidance_t m_guide;
   int m_me;
   std::vector<int> m_peers;
+  std::vector<SMR> m_smrs;
 
  private:
   void init_local_guidance(int key_space = DEFAULT_KEY_SPACE);
@@ -29,9 +30,9 @@ class Morphling {
   void handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from);
   void send_append_entries(int to);
   void reply_client();
-  bool is_valid_guidance(uint64_t epoch);
   void reply_guidance();
   void send_append_entries_reply(AppenEntriesReplyMessage &reply);
+  bool is_valid_guidance(uint64_t epoch);
 };
 
 #endif // __CORE_MORPHLING_H__

@@ -1,0 +1,80 @@
+#include <gtest/gtest.h>
+
+#include "smr.h"
+
+std::vector<Entry> generate_test_entries(size_t size) {
+  std::vector<Entry> log;
+  std::string str("hello world");
+  std::vector<uint8_t> data(str.begin(), str.end());
+
+  for (size_t i = 0; i < size; i++) {
+    log.emplace_back(data);
+  }
+
+  return log;
+}
+
+TEST(SMRLogTest, AppendNGetTest) {
+  size_t log_size = 3;
+  auto test_entries = generate_test_entries(log_size);
+
+  SMRLog smr_log;
+  EXPECT_EQ(smr_log.entry_at(0).index, 0);
+  EXPECT_EQ(smr_log.last_index(), 0);
+  for (size_t i = 0; i < log_size; i++) {
+    auto idx = smr_log.append(test_entries[i]);
+    EXPECT_EQ(smr_log.entry_at(idx).index, i+1);
+
+    EXPECT_EQ(smr_log.last_index(), i+1);
+  }
+  smr_log.show_all();
+}
+
+TEST(SMRLogTest, TruncateTest) {
+  size_t log_size = 5;
+  auto test_entries = generate_test_entries(log_size);
+
+  SMRLog smr_log;
+  EXPECT_EQ(smr_log.last_index(), 0);
+  for (size_t i = 0; i < log_size; i++) {
+    auto idx = smr_log.append(test_entries[i]);
+  }
+
+  smr_log.truncate(3);
+  EXPECT_ANY_THROW(smr_log.entry_at(3));
+  EXPECT_EQ(smr_log.last_index(), 2);
+  smr_log.show_all();
+
+  // expect 3, 4, 5, 6, 7
+  for (size_t i = 0; i < log_size; i++) {
+    auto idx = smr_log.append(test_entries[i]);
+
+    EXPECT_EQ(smr_log.entry_at(idx).index, i+3);
+
+    EXPECT_EQ(smr_log.last_index(), i+3);
+  }
+  smr_log.show_all();
+}
+
+TEST(SMRLogTest, CommitTest) {
+  size_t log_size = 5;
+  auto test_entries = generate_test_entries(log_size);
+
+  SMRLog smr_log;
+  EXPECT_EQ(smr_log.curr_commit(), 0);
+
+  for (size_t i = 0; i < log_size; i++) {
+    auto idx = smr_log.append(test_entries[i]);
+  }
+
+  auto res = smr_log.commit_to(2);
+  EXPECT_TRUE(res);
+  res = smr_log.commit_to(2);
+  EXPECT_FALSE(res);
+
+  res = smr_log.commit_to(5);
+  EXPECT_TRUE(res);
+
+  EXPECT_ANY_THROW(smr_log.commit_to(6));
+  smr_log.show_all();
+}

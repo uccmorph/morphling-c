@@ -1,6 +1,7 @@
 #include <vector>
 #include <loguru.hpp>
 #include "smr.h"
+#include "morphling.h"
 
 int main(int argc, char **argv) {
     loguru::init(argc, argv);
