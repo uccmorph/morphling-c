@@ -3,13 +3,16 @@
 #include <stdlib.h>
 
 #include <algorithm>
-#include <loguru.hpp>
 #include <stdexcept>
 #include <utility>
+#include "loguru.hpp"
 
 SMRLog::SMRLog() : m_dummy_entry(0, 0) { m_log.reserve(10000); }
 
 uint64_t SMRLog::entry_pos(uint64_t e_index) {
+  if (e_index == 0) {
+    ABORT_F("can not find entry index 0 in log");
+  }
   if (e_index < m_dummy_entry.index) {
     return 0;
   }
@@ -24,22 +27,29 @@ void SMRLog::show_all() {
   }
 }
 
-uint64_t SMRLog::append(Entry &e) {
+uint64_t SMRLog::append(Entry &e, uint64_t epoch) {
   if (m_log.size() == 0) {
     m_log.emplace_back(e.data);
     auto &new_e = m_log.back();
     new_e.index = 1;
+    new_e.epoch = epoch;
     return 1;
   }
   auto &last_e = m_log.back();
   m_log.emplace_back(e.data);
   auto &new_e = m_log.back();
   new_e.index = last_e.index + 1;
+  new_e.epoch = epoch;
 
   return new_e.index;
 }
 
+uint64_t SMRLog::append(Entry &e) {
+  return SMRLog::append(e, e.epoch);
+}
+
 void SMRLog::truncate(uint64_t t_idx) {
+  LOG_F(WARNING, "truncate entry %zu", t_idx);
   auto target_last_itr = m_log.begin() + entry_pos(t_idx);
   while (target_last_itr < m_log.end()) {
     m_log.pop_back();
@@ -52,27 +62,30 @@ Entry &SMRLog::entry_at(uint64_t index) {
   }
   uint64_t real_index = entry_pos(index);
   if (real_index >= m_log.size()) {
-    char err_msg[128];
-    snprintf(err_msg, 128,
-             "visit entry index %zu at log position %zu, excced log length %zu",
+    ABORT_F("visit entry index %zu at log position %zu, excced log length %zu",
              index, real_index, m_log.size());
-    throw std::invalid_argument(err_msg);
   }
   return m_log[real_index];
 }
 
 std::vector<Entry> SMRLog::get_tail_entries(uint64_t in) {
-  auto gap = entry_pos(in);
-  auto start_itr = m_log.begin() + gap;
-  std::vector<Entry> res(start_itr , m_log.end());
+  return SMRLog::get_part_entries(in, last_index());
+}
+
+// get entries including start and end
+std::vector<Entry> SMRLog::get_part_entries(uint64_t start, uint64_t end) {
+  if (end < start) {
+    ABORT_F("retrieve entries frome %zu to %zu, out of order", start, end);
+  }
+  auto start_pos = entry_pos(start);
+  auto ex_end_pos = entry_pos(end) + 1;
+  std::vector<Entry> res(m_log.begin() + start_pos, m_log.begin() + ex_end_pos);
   return res;
 }
 
 bool SMRLog::commit_to(uint64_t index) {
   if (index > last_index()) {
-    char err_msg[128];
-    snprintf(err_msg, 128, "want to commit entry %zu excced last log %zu", index, last_index());
-    throw std::invalid_argument(err_msg);
+    ABORT_F("want to commit entry %zu excced last log %zu", index, last_index());
   }
 
   if (index > m_commits) {
@@ -111,7 +124,6 @@ bool EntryVoteRecord::vote(int id, uint64_t index) {
     m_records.emplace(index, std::vector<bool>(m_peer_num, false));
   }
   auto &entry_record = m_records.at(index);
-  LOG_F(INFO, "size of entry_record (index %d): %zu", id, entry_record.size());
   entry_record[id] = true;
 
   int agree_count = 0;
@@ -134,7 +146,7 @@ SMR::SMR(int me, std::vector<int> &peers, SMRMessageCallback cb)
     : m_me(me), m_peers(peers), m_cb(cb) {
   m_entry_votes.init(peers.size());
   for (auto id : peers) {
-    m_prs.emplace(id, 0, 0);
+    m_prs[id] = PeerStatus{0, 0};
   }
 }
 
@@ -148,7 +160,7 @@ std::tuple<bool, bool> SMR::check_safety(uint64_t prev_term,
     } else {
       return std::make_tuple(true, true);
     }
-  } else if (prev_index == last_entry.epoch) {
+  } else if (prev_index == last_entry.index) {
     if (prev_term != last_entry.epoch) {
       return std::make_tuple(false, false);
     } else {
@@ -177,28 +189,27 @@ void SMR::handle_stale_entries(AppendEntriesMessage &msg) {
 
 void SMR::handle_operation(ClientProposalMessage &msg) {
   Entry e(msg.data);
-  auto last_idx = m_log.append(e);
+  auto last_idx = m_log.append(e, msg.epoch);
+  m_entry_votes.vote(m_me, last_idx);
   m_prs[m_me].match = last_idx;
   m_prs[m_me].next = last_idx + 1;
   for (auto rid : m_peers) {
     if (rid != m_me) {
-      if (m_prs[rid].match != 0) {
-        m_prs[rid].next = last_idx;
-        send_append_entries(rid);
-      }
+      m_prs[rid].next = last_idx;
+      send_append_entries(rid);
     }
   }
 }
 
-void SMR::handle_append_entries(AppendEntriesMessage &msg) {
+void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
   AppenEntriesReplyMessage reply;
-  reply.index = msg.prev_index;
-  reply.success = false;
 
   auto [safe, stale] = check_safety(msg.prev_term, msg.prev_index);
   if (!safe) {
+    reply.success = false;
     LOG_F(ERROR, "This AppendEntriesMessage is not safe");
   } else {
+    reply.success = true;
     if (stale) {
       handle_stale_entries(msg);
     } else {
@@ -212,7 +223,7 @@ void SMR::handle_append_entries(AppendEntriesMessage &msg) {
     }
   }
   reply.index = m_log.last_index();
-  send_append_entries_reply(reply);
+  send_append_entries_reply(reply, from);
 }
 
 void SMR::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from) {
@@ -221,9 +232,15 @@ void SMR::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from) {
     // tbd. nextIndex and matchIndex may not be realistic.
     return;
   }
-
+  LOG_F(INFO, "peer %d vote for entry %zu", from, msg.index);
   if (m_entry_votes.vote(from, msg.index)) {
-    m_log.commit_to(msg.index);
+    uint64_t old_commit = m_log.curr_commit();
+    bool ok = m_log.commit_to(msg.index);
+    if (ok) {
+      LOG_F(INFO, "entry %zu is newly committed", msg.index);
+      auto apply_entries = m_log.get_part_entries(old_commit+1, msg.index);
+      m_cb.notify_apply(apply_entries);
+    }
   }
 }
 
@@ -231,8 +248,8 @@ void SMR::send_append_entries(int to) {
   auto prev_idx = m_prs[to].next - 1;
   auto prev_term = m_log.entry_at(prev_idx).epoch;
   AppendEntriesMessage append_msg {
-    .prev_index = prev_idx,
     .prev_term = prev_term,
+    .prev_index = prev_idx,
     .commit = m_log.curr_commit(),
     .group_id = m_gid,
     .entries = m_log.get_tail_entries(m_prs[to].next),
@@ -240,8 +257,8 @@ void SMR::send_append_entries(int to) {
   m_cb.notify_send_append_entry(GenericMessage(append_msg, to));
 }
 
-void SMR::reply_client() {}
+void SMR::send_append_entries_reply(AppenEntriesReplyMessage &reply, int to) {
 
-void SMR::reply_guidance() {}
+  m_cb.notify_send_append_entry_reply(GenericMessage(reply, to));
+}
 
-void SMR::send_append_entries_reply(AppenEntriesReplyMessage &reply) {}

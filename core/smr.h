@@ -9,6 +9,7 @@
 #include <tuple>
 #include <vector>
 #include <unordered_map>
+#include <functional>
 
 #include "guidance.h"
 
@@ -57,12 +58,14 @@ class SMRLog {
   SMRLog();
 
   void show_all();
+  uint64_t append(Entry &e, uint64_t epoch);
   uint64_t append(Entry &e);
   // truncate including t_idx
   void truncate(uint64_t t_idx);
 
   Entry& entry_at(uint64_t index);
   std::vector<Entry> get_tail_entries(uint64_t in);
+  std::vector<Entry> get_part_entries(uint64_t start, uint64_t ex_end);
 
   bool commit_to(uint64_t index);
   uint64_t curr_commit();
@@ -133,10 +136,9 @@ public:
 };
 
 struct SMRMessageCallback {
-  bool on_client_operation();
-  bool notify_send_append_entry(GenericMessage &&msg);
-  bool ontify_send_append_entry_reply();
-  bool on_apply();
+  std::function<bool(GenericMessage &&msg)> notify_send_append_entry;
+  std::function<bool(GenericMessage &&msg)> notify_send_append_entry_reply;
+  std::function<bool(std::vector<Entry> entries)> notify_apply;
 };
 
 struct PeerStatus {
@@ -161,12 +163,16 @@ public:
   SMR(int me, std::vector<int> &peers, SMRMessageCallback cb);
 
   void handle_operation(ClientProposalMessage &msg);
-  void handle_append_entries(AppendEntriesMessage &msg);
+  void handle_append_entries(AppendEntriesMessage &msg, int from);
   void handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from);
+
   void send_append_entries(int to);
-  void reply_client();
-  void reply_guidance();
-  void send_append_entries_reply(AppenEntriesReplyMessage &reply);
+  void send_append_entries_reply(AppenEntriesReplyMessage &reply, int to);
+
+  // debug
+  SMRLog& debug_get_log() {
+    return m_log;
+  }
 };
 
 #endif  //__CORE_SMR_H__

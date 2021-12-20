@@ -34,11 +34,13 @@ enable_testing()
 set(ALL_TEST_NAME
   entry_vote
   smr_log
+  replication
 )
 
 set(ALL_TEST_SOURCES
   tests/entry_vote_test.cpp
   tests/smr_log_test.cpp
+  tests/replication_test.cpp
 )
 
 find_package(GTest CONFIG REQUIRED)
