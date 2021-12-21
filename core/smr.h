@@ -11,9 +11,11 @@
 #include <unordered_map>
 #include <functional>
 
-#include "guidance.h"
+#include <msgpack.hpp>
 
-using group_t = size_t;
+#include "guidance.h"
+#include "message.h"
+
 struct Entry {
   // bool valid = true;
   uint64_t epoch = 0;
@@ -27,6 +29,8 @@ struct Entry {
   ~Entry() {
     data.clear();
   }
+
+  MSGPACK_DEFINE(epoch, index, data);
   // Entry(Entry &&e) : epoch(e.epoch), index(e.index), data_size(e.data_size) {
   //   data = std::move(e.data);
   // }
@@ -74,54 +78,7 @@ class SMRLog {
   uint64_t last_index();
 };
 
-struct AppendEntriesMessage {
-  uint64_t epoch;
-  uint64_t prev_term;
-  uint64_t prev_index;
-  uint64_t commit;
-  group_t group_id;
 
-  std::vector<Entry> entries;
-};
-
-struct AppenEntriesReplyMessage {
-  bool success;
-  uint64_t epoch;
-  uint64_t index;
-};
-
-struct Operation {
-  int op_type;
-  std::vector<uint8_t> buf;
-};
-
-struct ClientProposalMessage {
-  // guidance_t guidance;
-  uint64_t epoch;
-  uint64_t key_hash;
-  // size_t data_size;
-  std::vector<uint8_t> data;
-};
-
-struct ReplyClientMessage {
-  uint64_t epoch;
-  uint64_t key_hash;
-};
-
-struct GenericMessage {
-  int type;
-  int to;
-  AppendEntriesMessage append_msg;
-  AppenEntriesReplyMessage append_reply_msg;
-  ClientProposalMessage client_msg;
-
-  GenericMessage(AppendEntriesMessage &msg, int to)
-      : type(1), to(to), append_msg(msg) {}
-  GenericMessage(AppenEntriesReplyMessage &msg, int to)
-      : type(2), to(to), append_reply_msg(msg) {}
-  GenericMessage(ClientProposalMessage &msg, int to)
-      : type(3), to(to), client_msg(msg) {}
-};
 
 class EntryVoteRecord {
   std::unordered_map<uint64_t, std::vector<bool>> m_records;
@@ -148,7 +105,7 @@ struct PeerStatus {
 
 class SMR {
   SMRLog m_log;
-  group_t m_gid;
+  uint64_t m_gid;
   int m_me;
   std::vector<int> &m_peers;
   EntryVoteRecord m_entry_votes;
@@ -158,11 +115,16 @@ class SMR {
   // @return <is_safe, is_stale>
   std::tuple<bool, bool> check_safety(uint64_t prev_term, uint64_t prev_index);
   void handle_stale_entries(AppendEntriesMessage &msg);
+  void init();
 
 public:
+  SMR(int me, std::vector<int> &peers);
   SMR(int me, std::vector<int> &peers, SMRMessageCallback cb);
+  SMR(SMR &&smr);
+  void set_cb(SMRMessageCallback cb);
+  void set_gid(uint64_t gid);
 
-  void handle_operation(ClientProposalMessage &msg);
+  void handle_operation(ClientMessage &msg);
   void handle_append_entries(AppendEntriesMessage &msg, int from);
   void handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from);
 

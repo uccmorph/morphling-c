@@ -27,7 +27,7 @@ TEST(ReplicationTest, NewEntryTest) {
   };
   SMR smr(0, peers, cb);
 
-  ClientProposalMessage msg{
+  ClientMessage msg{
       .epoch = 1,
   };
   smr.handle_operation(msg);
@@ -126,7 +126,7 @@ TEST(ReplicationTest, HandelAppendEntryReplyTest) {
 
   SMR smr(0, peers, cb);
 
-  ClientProposalMessage msg{
+  ClientMessage msg{
       .epoch = 1,
   };
   smr.handle_operation(msg);

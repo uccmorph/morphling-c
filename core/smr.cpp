@@ -110,7 +110,6 @@ uint64_t SMRLog::last_index() { return last_entry().index; }
 void EntryVoteRecord::init(int num) {
   m_peer_num = num;
   m_quorum = num / 2 + 1;
-  LOG_F(INFO, "init entry vote");
 }
 
 bool EntryVoteRecord::vote(int id, uint64_t index) {
@@ -142,10 +141,30 @@ bool EntryVoteRecord::vote(int id, uint64_t index) {
 
 // ---------------- State Machine Replication ------------------
 
+SMR::SMR(int me, std::vector<int> &peers): m_me(me), m_peers(peers) {
+  SMR::init();
+}
+
 SMR::SMR(int me, std::vector<int> &peers, SMRMessageCallback cb)
     : m_me(me), m_peers(peers), m_cb(cb) {
-  m_entry_votes.init(peers.size());
-  for (auto id : peers) {
+  SMR::init();
+}
+
+SMR::SMR(SMR &&smr): m_peers(smr.m_peers) {
+
+}
+
+void SMR::set_cb(SMRMessageCallback cb) {
+  m_cb = cb;
+}
+
+void SMR::set_gid(uint64_t gid) {
+  m_gid = gid;
+}
+
+void SMR::init() {
+  m_entry_votes.init(m_peers.size());
+  for (auto id : m_peers) {
     m_prs[id] = PeerStatus{0, 0};
   }
 }
@@ -187,7 +206,7 @@ void SMR::handle_stale_entries(AppendEntriesMessage &msg) {
   }
 }
 
-void SMR::handle_operation(ClientProposalMessage &msg) {
+void SMR::handle_operation(ClientMessage &msg) {
   Entry e(msg.data);
   auto last_idx = m_log.append(e, msg.epoch);
   m_entry_votes.vote(m_me, last_idx);
@@ -258,7 +277,7 @@ void SMR::send_append_entries(int to) {
 }
 
 void SMR::send_append_entries_reply(AppenEntriesReplyMessage &reply, int to) {
-
+  reply.group_id = m_gid;
   m_cb.notify_send_append_entry_reply(GenericMessage(reply, to));
 }
 
