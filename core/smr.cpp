@@ -207,7 +207,7 @@ void SMR::handle_stale_entries(AppendEntriesMessage &msg) {
 }
 
 void SMR::handle_operation(ClientMessage &msg) {
-  Entry e(msg.data);
+  Entry e(msg.op);
   auto last_idx = m_log.append(e, msg.epoch);
   m_entry_votes.vote(m_me, last_idx);
   m_prs[m_me].match = last_idx;

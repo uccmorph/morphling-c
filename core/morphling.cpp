@@ -131,13 +131,13 @@ bool Morphling::maybe_send_msgs() {
   }
   for (auto &msg : m_next_msgs) {
     switch (msg.type) {
-    case 1:
+    case MsgTypeAppend:
       msg.append_msg.epoch = m_guide.epoch;
       break;
-    case 2:
+    case MsgTypeAppendReply:
       msg.append_reply_msg.epoch = m_guide.epoch;
       break;
-    case 3:
+    case MsgTypeClient:
       msg.client_msg.epoch = m_guide.epoch;
       break;
     }

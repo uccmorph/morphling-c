@@ -11,6 +11,13 @@
 
 struct Entry;
 
+enum MessageType {
+  MsgTypeAppend,
+  MsgTypeAppendReply,
+  MsgTypeClient,
+  MsgTypeGuidance,
+};
+
 struct AppendEntriesMessage {
   uint64_t epoch;
 
@@ -29,12 +36,16 @@ struct AppenEntriesReplyMessage {
   bool success;
   uint64_t group_id;
   uint64_t index;
+
+  MSGPACK_DEFINE(epoch, success, group_id, index);
 };
 
 struct Operation {
-  int op_type;
+  int op_type; // 0 for read, 1 for write
   uint64_t key_hash;
-  std::vector<uint8_t> buf;
+  std::vector<uint8_t> data;
+
+  MSGPACK_DEFINE(op_type, key_hash, data);
 };
 
 struct ClientMessage {
@@ -42,7 +53,9 @@ struct ClientMessage {
   uint64_t epoch;
   uint64_t key_hash;
   // size_t data_size;
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> op;
+
+  MSGPACK_DEFINE(epoch, key_hash, op);
 };
 
 struct GuidanceMessage {
@@ -52,7 +65,7 @@ struct GuidanceMessage {
 };
 
 struct GenericMessage {
-  int type;
+  MessageType type;
   int to;
   AppendEntriesMessage append_msg;
   AppenEntriesReplyMessage append_reply_msg;
@@ -60,13 +73,18 @@ struct GenericMessage {
   GuidanceMessage guidance_msg;
 
   GenericMessage(AppendEntriesMessage &msg, int to)
-      : type(1), to(to), append_msg(msg) {}
+      : type(MsgTypeAppend), to(to), append_msg(msg) {}
   GenericMessage(AppenEntriesReplyMessage &msg, int to)
-      : type(2), to(to), append_reply_msg(msg) {}
+      : type(MsgTypeAppendReply), to(to), append_reply_msg(msg) {}
   GenericMessage(ClientMessage &msg, int to)
-      : type(3), to(to), client_msg(msg) {}
+      : type(MsgTypeClient), to(to), client_msg(msg) {}
   GenericMessage(GuidanceMessage &msg, int to)
-      : type(4), to(to), guidance_msg(msg) {}
+      : type(MsgTypeGuidance), to(to), guidance_msg(msg) {}
+};
+
+struct RPCMessage {
+  uint32_t header_size;
+  uint8_t *payload;
 };
 
 #endif // __CORE_MESSAGE_H__
