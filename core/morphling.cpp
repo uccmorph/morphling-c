@@ -64,7 +64,7 @@ void Morphling::init_local_guidance(int key_space) {
   m_guide.status |= (cluster_size << guidance_offset_cluster);
   for (int i = 0; i < cluster_size; i++) {
     m_guide.cluster[i].status = 0;
-    
+
     uint32_t start_key_pos = uint32_t(i * key_space) / cluster_size;
     uint32_t end_key_pos = uint32_t((i + 1) * key_space) / cluster_size;
     m_guide.cluster[i].status |= (start_key_pos << 0);
@@ -90,9 +90,28 @@ SMR& Morphling::find_target_smr(uint64_t key_hash) {
   return smr;
 }
 
-void Morphling::handle_operation(ClientMessage &msg) {
+std::unique_ptr<Operation> Morphling::parse_operation(std::vector<uint8_t> data) {
+  std::string data_str(data.begin(), data.end());
+  auto oh = msgpack::unpack(data_str.data(), data_str.size());
+  auto o = oh.get();
+
+  std::unique_ptr<Operation> op = std::make_unique<Operation>();
+  o.convert(*op.get());
+
+  return op;
+}
+
+void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> &&trans) {
   if (!is_valid_guidance(msg.epoch)) {
     reply_guidance();
+    return;
+  }
+
+  auto op = parse_operation(msg.op);
+  if (op.get()->op_type == 0) {
+    // send echo msg
+    std::string echo_str("hello world!");
+    trans->send((uint8_t *)echo_str.c_str(), echo_str.size());
     return;
   }
 

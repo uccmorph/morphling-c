@@ -46,19 +46,20 @@ void read_cb(struct bufferevent* bev, void* ctx) {
   int fd = bufferevent_getfd(bev);
   struct evbuffer* input = bufferevent_get_input(bev);
   struct evbuffer* output = bufferevent_get_output(bev);
-  char* line = evbuffer_readln(input, NULL, EVBUFFER_EOL_ANY);
-  if (line) {
-    if (strcmp(line, "quit") == 0) {
-      if (evbuffer_get_length(output) > 0)
-        client_ctx->shutting = 1;
-      else
-        shutdown(fd, SHUT_RD);
-    } else if (strcmp(line, "abort") == 0) {
-      shutdown(fd, SHUT_RD);
-    }
-    if (!client_ctx->shutting) evbuffer_add_printf(output, "%s\n", line);
-    free(line);
-  }
+  // char* line = evbuffer_readln(input, NULL, EVBUFFER_EOL_NUL);
+  char tmp[1024];
+  size_t n = bufferevent_read(bev, tmp, 1024);
+  printf("read %zu bytes\n", n);
+
+  int res = bufferevent_write(bev, tmp, n);
+  printf("write res = %d\n", res);
+
+
+
+  // evbuffer_add_printf(output, "%s\n", line);
+  // bufferevent_write(bev, line, );
+  // printf("read: %s\n", line);
+  // free(line);
 }
 
 void write_cb(struct bufferevent* bev, void* ctx) {
@@ -103,13 +104,14 @@ void listener_cb(struct evconnlistener* l, evutil_socket_t nfd,
   struct bufferevent* bev =
       bufferevent_socket_new(base, nfd, BEV_OPT_CLOSE_ON_FREE);
   assert(bev);
+  printf("new bufferevent at %p\n", bev);
 
   struct client_ctx_st* client_ctx = (struct client_ctx_st*)malloc(sizeof(struct client_ctx_st));
   client_ctx->base = base;
   client_ctx->shutting = 0;
 
   bufferevent_setcb(bev, read_cb, nullptr, event_cb, client_ctx);
-  bufferevent_enable(bev, EV_READ | EV_WRITE | EV_ET);
+  bufferevent_enable(bev, EV_READ | EV_WRITE | EV_PERSIST);
 }
 
 int main(void) {

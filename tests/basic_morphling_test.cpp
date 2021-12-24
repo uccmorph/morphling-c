@@ -12,7 +12,7 @@ TEST(BasicMorphlingTest, Init) {
       .key_hash = 0x4199,
   };
 
-  mpreplica.handle_operation(msg);
+  // mpreplica.handle_operation(msg);
 
 
 }

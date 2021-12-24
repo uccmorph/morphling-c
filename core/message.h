@@ -32,7 +32,7 @@ struct AppendEntriesMessage {
 
 struct AppenEntriesReplyMessage {
   uint64_t epoch;
-  
+
   bool success;
   uint64_t group_id;
   uint64_t index;
@@ -82,9 +82,12 @@ struct GenericMessage {
       : type(MsgTypeGuidance), to(to), guidance_msg(msg) {}
 };
 
+
+// useless struct
 struct RPCMessage {
-  uint32_t header_size;
-  uint8_t *payload;
+  uint32_t header_size:24;
+  uint32_t header_type:8;
+  std::string payload;
 };
 
 #endif // __CORE_MESSAGE_H__

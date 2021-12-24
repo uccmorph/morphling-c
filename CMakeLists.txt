@@ -14,6 +14,7 @@ set(CORE_LIB_NAME morphling)
 set(SOURCES
   core/smr.cpp
   core/morphling.cpp
+  core/transport.cpp
 )
 
 set(SOURCES
@@ -26,7 +27,15 @@ message(WARNING "all sources: ${SOURCES}")
 include_directories(core)
 include_directories(loguru)
 add_library(${CORE_LIB_NAME} STATIC ${SOURCES})
-target_link_libraries(${CORE_LIB_NAME} dl)
+target_link_libraries(${CORE_LIB_NAME} dl event)
+
+# app
+add_executable(server app/server.cpp)
+set_target_properties(server PROPERTIES LINK_FLAGS -pthread)
+target_link_libraries(server ${CORE_LIB_NAME} event)
+
+add_executable(client app/client.cpp)
+set_target_properties(client PROPERTIES LINK_FLAGS -pthread)
 
 # gtest
 # after install gtest, /usr/local/lib/cmake/GTest should exist

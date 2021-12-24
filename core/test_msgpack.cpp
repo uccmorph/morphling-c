@@ -1,5 +1,6 @@
 #include <sstream>
 #include <iostream>
+#include <memory>
 
 #include <msgpack.hpp>
 
@@ -48,8 +49,10 @@ void receive(std::string str) {
   auto oh = msgpack::unpack(str.data(), str.size());
   auto o = oh.get();
 
-  AppendEntriesMessage msg;
+  std::unique_ptr<AppendEntriesMessage> p_msg = std::make_unique<AppendEntriesMessage>();
+  AppendEntriesMessage& msg = *p_msg.get();
   o.convert(msg);
+
   printf("msg: poch: %zu, prev_epoch: %zu, prev_index: %zu, commit: %zu, group_id: %zu\n", msg.epoch, msg.prev_term, msg.prev_index, msg.commit, msg.group_id);
   printf("entries size: %zu\n", msg.entries.size());
   for (auto &item : msg.entries) {
@@ -81,7 +84,7 @@ std::string send_guidance() {
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
-  return stream.str();  
+  return stream.str();
 }
 
 void receive_guidance(std::string str) {

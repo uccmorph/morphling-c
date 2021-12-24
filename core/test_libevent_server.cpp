@@ -37,7 +37,7 @@ static void pSigHandler(int signo) {
       printf("quit all\n");
       break;
   }
-  
+
 }
 
 char rot13_char(char c) {
@@ -60,7 +60,7 @@ void readcb(struct bufferevent *bev, void *ctx) {
   output = bufferevent_get_output(bev);
   printf("inter %s\n", __func__);
 
-  while ((line = evbuffer_readln(input, &n, EVBUFFER_EOL_LF))) {
+  while ((line = evbuffer_readln(input, &n, EVBUFFER_EOL_NUL))) {
     for (i = 0; i < n; ++i) line[i] = rot13_char(line[i]);
     evbuffer_add(output, line, n);
     evbuffer_add(output, "\n", 1);

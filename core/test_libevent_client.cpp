@@ -41,7 +41,7 @@ int main(int c, char **v) {
   /* XXX Can send succeed partially? */
   const char *query = "hello world";
   cp = query;
-  remaining = strlen(query);
+  remaining = strlen(query) + 1;
   while (remaining) {
     n_written = send(fd, cp, remaining, 0);
     if (n_written <= 0) {
