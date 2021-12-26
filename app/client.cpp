@@ -34,7 +34,7 @@ int main(int c, char **v) {
 
   /* Connect to the remote host. */
   sin.sin_family = AF_INET;
-  sin.sin_port = htons(40713);
+  sin.sin_port = htons(9990);
   res = inet_aton(server_ip, &sin.sin_addr);
   if (connect(fd, (struct sockaddr *)&sin, sizeof(sin))) {
     perror("connect");
@@ -46,7 +46,7 @@ int main(int c, char **v) {
   /* XXX Can send succeed partially? */
   const char *query = "hello world";
   Operation op{
-    .op_type = 0,
+    .op_type = 1,
     .key_hash = 0x5499,
   };
   std::stringstream ss;

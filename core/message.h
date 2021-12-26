@@ -19,6 +19,7 @@ enum MessageType {
 };
 
 struct AppendEntriesMessage {
+  int from;
   uint64_t epoch;
 
   uint64_t prev_term;
@@ -27,17 +28,18 @@ struct AppendEntriesMessage {
   uint64_t group_id;
   std::vector<Entry> entries;
 
-  MSGPACK_DEFINE(epoch, prev_term, prev_index, commit, group_id, entries);
+  MSGPACK_DEFINE(from, epoch, prev_term, prev_index, commit, group_id, entries);
 };
 
 struct AppenEntriesReplyMessage {
+  int from;
   uint64_t epoch;
 
   bool success;
   uint64_t group_id;
   uint64_t index;
 
-  MSGPACK_DEFINE(epoch, success, group_id, index);
+  MSGPACK_DEFINE(from, epoch, success, group_id, index);
 };
 
 struct Operation {
@@ -49,19 +51,22 @@ struct Operation {
 };
 
 struct ClientMessage {
+  int from;
   // guidance_t guidance;
   uint64_t epoch;
   uint64_t key_hash;
   // size_t data_size;
   std::vector<uint8_t> op;
 
-  MSGPACK_DEFINE(epoch, key_hash, op);
+  MSGPACK_DEFINE(from, epoch, key_hash, op);
 };
 
 struct GuidanceMessage {
+  int from;
   guidance_t guide;
+  int votes;
 
-  MSGPACK_DEFINE(guide);
+  MSGPACK_DEFINE(from, guide, votes);
 };
 
 struct GenericMessage {

@@ -4,31 +4,88 @@
 #include <event2/event.h>
 #include <event2/listener.h>
 #include <event2/util.h>
+#include <getopt.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
 
 #include <unordered_map>
 
+#include <loguru.hpp>
+
 #include "morphling.h"
 #include "transport.h"
 
 class SocketTransport : public Transport {
   bufferevent *m_bev;
+  void __send(MessageType type, uint8_t *payload, uint64_t payload_size);
 
  public:
   SocketTransport(bufferevent *bev) : m_bev(bev) {}
   ~SocketTransport() {}
   void send(uint8_t *buf, uint64_t size);
+  void send(AppendEntriesMessage &msg);
+  void send(AppenEntriesReplyMessage &msg);
+  void send(ClientMessage &msg);
+  void send(GuidanceMessage &msg);
 };
 
 void SocketTransport::send(uint8_t *buf, uint64_t size) {
+  LOG_F(INFO, "[%s] send %zu bytes", __FUNCTION__, size);
+
   bufferevent_write(m_bev, buf, size);
 }
 
+void SocketTransport::__send(MessageType type, uint8_t *payload, uint64_t payload_size) {
+  LOG_F(INFO, "[%s] send %zu bytes", __FUNCTION__, payload_size);
+
+  char header_buf[4];
+  for (int i = 0; i < 4; i++) {
+    header_buf[i] = (payload_size >> (i * 8)) & 0xFF;
+  }
+  header_buf[3] = type & 0xFF;
+  bufferevent_write(m_bev, header_buf, 4);
+  bufferevent_write(m_bev, payload, payload_size);
+}
+
+void SocketTransport::send(AppendEntriesMessage &msg) {
+  LOG_F(INFO, "send AppendEntriesMessage\n");
+  std::stringstream stream;
+  msgpack::pack(stream, msg);
+
+  SocketTransport::__send(MsgTypeAppend, (uint8_t *)stream.str().data(), stream.str().size());
+}
+void SocketTransport::send(AppenEntriesReplyMessage &msg) {
+  LOG_F(INFO, "send AppenEntriesReplyMessage\n");
+  std::stringstream stream;
+  msgpack::pack(stream, msg);
+
+  SocketTransport::__send(MsgTypeAppendReply, (uint8_t *)stream.str().data(), stream.str().size());
+}
+void SocketTransport::send(ClientMessage &msg) {
+  LOG_F(INFO, "send ClientMessage\n");
+  std::stringstream stream;
+  msgpack::pack(stream, msg);
+
+  SocketTransport::__send(MsgTypeClient, (uint8_t *)stream.str().data(), stream.str().size());
+}
+void SocketTransport::send(GuidanceMessage &msg) {
+  LOG_F(INFO, "send GuidanceMessage\n");
+  std::stringstream stream;
+  msgpack::pack(stream, msg);
+
+  SocketTransport::__send(MsgTypeGuidance, (uint8_t *)stream.str().data(), stream.str().size());
+}
+
+class Server;
 struct PeerContext {
   int id;
-  struct event *m_retry_ev;
+  struct event *retry_ev;
+  Server *server;
+  struct bufferevent *socket_bev;
+  struct sockaddr_in peer_addr;
+  bool proactive_connected = false;
+  bool passive_connected = false;
 };
 
 class Server {
@@ -36,23 +93,21 @@ class Server {
   std::unordered_map<int, std::string> m_peer_addresses;
   std::unordered_map<int, int> m_peer_port;
   std::unordered_map<int, std::unique_ptr<Transport>> m_peer_trans;
-  std::unordered_map<int, PeerContext> m_peer_retry;
+  std::unordered_map<int, PeerContext> m_peer_ctx;
   Morphling m_mpreplica;
   struct event_base *m_base;
   int m_me;
   std::vector<int> m_peers;
 
-  Server(int id, std::vector<int> &peers) : m_mpreplica(id, peers) {
-    m_me = id;
-    m_peers = peers;
-    for (auto pid : peers) {
-      m_peer_retry[pid] = PeerContext{
-          .id = pid,
-      };
-    }
+  Server(int id, std::vector<int> &peers)
+      : m_mpreplica(id, peers), m_me(id), m_peers(peers) {
+    struct event_base *base = event_base_new();
+    m_base = base;
   }
-  void start();
-  void connect_peer(int id);
+
+  void run();
+  void init_peer_ctx();
+  bool connect_peer(int id);
   void periodic_peer(int id);
 };
 
@@ -76,30 +131,31 @@ void parse_and_feed_msg(struct bufferevent *bev, void *ctx) {
   }
   MessageType msg_type = (MessageType)(tmp[3] & 0x000000FF);
 
-  printf("payload size: %u\n", payload_size);
-  printf("msg type: %d\n", msg_type);
+  LOG_F(INFO, "payload size: %u", payload_size);
+  LOG_F(INFO, "msg type: %d", msg_type);
 
   n = bufferevent_read(bev, tmp, payload_size);
   assert(n == payload_size);
-
-  std::unique_ptr<Transport> trans = std::make_unique<SocketTransport>(bev);
 
   if (msg_type == MsgTypeAppend) {
     AppendEntriesMessage msg;
     auto oh = msgpack::unpack(tmp, payload_size);
     oh.get().convert(msg);
-
+    server->m_mpreplica.handle_append_entries(msg, msg.from);
+    server->m_mpreplica.bcast_msgs(server->m_peer_trans);
   } else if (msg_type == MsgTypeAppendReply) {
     AppenEntriesReplyMessage msg;
     auto oh = msgpack::unpack(tmp, payload_size);
     oh.get().convert(msg);
+    server->m_mpreplica.handle_append_entries_reply(msg, msg.from);
 
   } else if (msg_type == MsgTypeClient) {
     ClientMessage msg;
+    std::unique_ptr<Transport> trans = std::make_unique<SocketTransport>(bev);
     auto oh = msgpack::unpack(tmp, payload_size);
     oh.get().convert(msg);
     server->m_mpreplica.handle_operation(msg, std::move(trans));
-
+    server->m_mpreplica.bcast_msgs(server->m_peer_trans);
   } else if (msg_type == MsgTypeGuidance) {
     GuidanceMessage msg;
     auto oh = msgpack::unpack(tmp, payload_size);
@@ -108,13 +164,15 @@ void parse_and_feed_msg(struct bufferevent *bev, void *ctx) {
 }
 
 void read_cb(struct bufferevent *bev, void *ctx) {
-  printf("read_cb\n");
+  LOG_F(INFO, "read_cb");
 
   parse_and_feed_msg(bev, ctx);
 }
 
 void event_cb(struct bufferevent *bev, short what, void *ctx) {
   int needfree = 0;
+
+  LOG_F(INFO, "[%s:%d] event_cb new event 0x%x", __FUNCTION__, __LINE__, what);
 
   if (what & BEV_EVENT_EOF || what & BEV_EVENT_TIMEOUT ||
       what & BEV_EVENT_ERROR) {
@@ -123,7 +181,7 @@ void event_cb(struct bufferevent *bev, short what, void *ctx) {
 
   if (needfree) {
     int errcode = evutil_socket_geterror(bufferevent_getfd(bev));
-    printf("errcode: %d\n", errcode);
+    LOG_F(INFO, "errcode: %d", errcode);
     bufferevent_free(bev);
   }
 }
@@ -136,7 +194,12 @@ void listener_cb(struct evconnlistener *l, evutil_socket_t nfd,
   struct bufferevent *bev =
       bufferevent_socket_new(server->m_base, nfd, BEV_OPT_CLOSE_ON_FREE);
   assert(bev);
-  printf("new bufferevent at %p\n", bev);
+  LOG_F(INFO, "new bufferevent at %p", bev);
+
+
+  char *ip = inet_ntoa(((struct sockaddr_in *)addr)->sin_addr);
+  uint16_t port = ntohs(((struct sockaddr_in *)addr)->sin_port);
+  LOG_F(INFO, "accept new connection: %s:%u", ip, port);
 
   bufferevent_setcb(bev, read_cb, nullptr, event_cb, ctx);
   bufferevent_enable(bev, EV_READ | EV_PERSIST);
@@ -146,32 +209,33 @@ void signal_cb(evutil_socket_t sig, short events, void *arg) {
   Server *server = (Server *)arg;
   struct timeval delay = {2, 0};
 
-  printf("Caught an interrupt signal; exiting cleanly in two seconds.\n");
+  LOG_F(INFO, "Caught an interrupt signal; exiting cleanly in two seconds.");
 
-  for (auto item : server->m_peer_retry) {
+  for (auto item : server->m_peer_ctx) {
     if (item.first != server->m_me) {
-      event_del(item.second.m_retry_ev);
+      event_del(item.second.retry_ev);
     }
   }
   event_base_loopexit(server->m_base, &delay);
 }
 
-void Server::start() {
-  struct event_base *base = event_base_new();
-  m_base = base;
+void Server::run() {
+  Server::init_peer_ctx();
 
   struct sockaddr saddr;
   int socklen = sizeof(saddr);
 
-  int ret = evutil_parse_sockaddr_port("0.0.0.0:40713", &saddr, &socklen);
+  std::string local_service = "0.0.0.0:" + std::to_string(m_peer_port[m_me]);
+
+  int ret = evutil_parse_sockaddr_port(local_service.c_str(), &saddr, &socklen);
   assert(ret == 0);
 
   struct evconnlistener *lev = evconnlistener_new_bind(
-      base, listener_cb, this, LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, 100,
+      m_base, listener_cb, this, LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, 100,
       &saddr, socklen);
   assert(lev);
 
-  struct event *ev_signal = evsignal_new(base, SIGINT, signal_cb, this);
+  struct event *ev_signal = evsignal_new(m_base, SIGINT, signal_cb, this);
   event_add(ev_signal, NULL);
 
   for (auto pid : m_peers) {
@@ -180,45 +244,103 @@ void Server::start() {
     }
   }
 
-  event_base_dispatch(base);
+  event_base_dispatch(m_base);
 
   evconnlistener_free(lev);
 
-  event_base_free(base);
+  event_base_free(m_base);
 }
 
-void Server::connect_peer(int id) {
-  bufferevent *bev = bufferevent_socket_new(m_base, -1, BEV_OPT_CLOSE_ON_FREE);
-  struct sockaddr_in peer_addr;
-  memset(&peer_addr, 0, sizeof(struct sockaddr_in));
-  peer_addr.sin_family = AF_INET;
-  peer_addr.sin_port = htons(m_peer_port[id]);
-  inet_aton(m_peer_addresses[id].c_str(), &peer_addr.sin_addr);
-  bufferevent_socket_connect(bev, (struct sockaddr *)&peer_addr,
-                             sizeof(struct sockaddr_in));
+void Server::init_peer_ctx() {
+  for (auto pid : m_peers) {
+    if (pid != m_me) {
+      m_peer_ctx[pid] = PeerContext{
+          .id = pid,
+          .server = this,
+      };
+      auto &peer = m_peer_ctx[pid];
+      bufferevent *bev =
+          bufferevent_socket_new(m_base, -1, BEV_OPT_CLOSE_ON_FREE);
+      memset(&peer.peer_addr, 0, sizeof(struct sockaddr_in));
+      peer.peer_addr.sin_family = AF_INET;
+      peer.peer_addr.sin_port = htons(m_peer_port[pid]);
+      inet_aton(m_peer_addresses[pid].c_str(), &peer.peer_addr.sin_addr);
+      peer.socket_bev = bev;
+    }
+  }
+}
 
-  m_peer_trans[id] = std::make_unique<SocketTransport>(bev);
+bool Server::connect_peer(int id) {
+  auto &peer = m_peer_ctx[id];
+  int res = bufferevent_socket_connect(peer.socket_bev,
+                                       (struct sockaddr *)&peer.peer_addr,
+                                       sizeof(struct sockaddr_in));
+  if (res != 0) {
+    LOG_F(INFO, "bufferevent_socket_connect failure!");
+    return false;
+  }
+  bufferevent_setcb(
+      peer.socket_bev, nullptr, nullptr,
+      [](struct bufferevent *bev, short what, void *arg) {
+        PeerContext *ctx = (PeerContext *)arg;
+        LOG_F(INFO, "get event: 0x%x, from peer %d", what, ctx->id);
+        if (what & BEV_EVENT_CONNECTED) {
+          ctx->proactive_connected = true;
+        }
+      }, &peer);
+  bufferevent_enable(peer.socket_bev, EV_READ | EV_WRITE | EV_ET | EV_PERSIST);
+  m_peer_trans[id] = std::make_unique<SocketTransport>(peer.socket_bev);
+  return true;
 }
 
 void Server::periodic_peer(int id) {
   struct event *ev_period = event_new(
-      m_base, -1, EV_TIMEOUT,
+      m_base, -1, EV_PERSIST,
       [](evutil_socket_t fd, short what, void *arg) {
-        // Server *server = (Server *)arg;
         PeerContext *ctx = (PeerContext *)arg;
-        printf("to %d, what = 0x%x\n", ctx->id, what);
-
-        struct timeval one_sec = {1, 0};
-        event_add(ctx->m_retry_ev, &one_sec);
+        if (!ctx->proactive_connected && !ctx->passive_connected) {
+          LOG_F(INFO, "to %d, what = 0x%x", ctx->id, what);
+          ctx->server->connect_peer(ctx->id);
+        }
       },
-      &m_peer_retry[id]);
+      &m_peer_ctx[id]);
   struct timeval one_sec = {1, 0};
-  m_peer_retry[id].m_retry_ev = ev_period;
+  m_peer_ctx[id].retry_ev = ev_period;
   event_add(ev_period, &one_sec);
 }
 
 int main(int argc, char **argv) {
   int id = 0;
+
+  static struct option long_options[] = {{"id", required_argument, 0, 0},
+                                         {0, 0, 0, 0}};
+  int c = 0;
+  bool fail = false;
+  bool mandatory1 = false;
+  while (!fail) {
+    int option_index = 0;
+    c = getopt_long(argc, argv, "", long_options, &option_index);
+    if (c == -1) break;
+    switch (c) {
+      case 0:
+        switch (option_index) {
+          case 0:
+            LOG_F(INFO, "id = %s", optarg);
+            mandatory1 = true;
+            id = std::stoi(optarg);
+        }
+
+        break;
+      default:
+        fail = true;
+        LOG_F(ERROR, "unknown arg: %c", c);
+    }
+  }
+  if (fail || !mandatory1) {
+    LOG_F(ERROR, "support args: --id");
+    return 1;
+  }
+
   std::vector<int> peers{0, 1, 2};
   Server server(id, peers);
 
@@ -230,5 +352,5 @@ int main(int argc, char **argv) {
   server.m_peer_port[1] = 9991;
   server.m_peer_port[2] = 9992;
 
-  server.start();
+  server.run();
 }

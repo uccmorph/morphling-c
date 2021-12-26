@@ -124,7 +124,7 @@ public:
   void set_cb(SMRMessageCallback cb);
   void set_gid(uint64_t gid);
 
-  void handle_operation(ClientMessage &msg);
+  uint64_t handle_operation(ClientMessage &msg);
   void handle_append_entries(AppendEntriesMessage &msg, int from);
   void handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from);
 

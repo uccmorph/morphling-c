@@ -206,7 +206,7 @@ void SMR::handle_stale_entries(AppendEntriesMessage &msg) {
   }
 }
 
-void SMR::handle_operation(ClientMessage &msg) {
+uint64_t SMR::handle_operation(ClientMessage &msg) {
   Entry e(msg.op);
   auto last_idx = m_log.append(e, msg.epoch);
   m_entry_votes.vote(m_me, last_idx);
@@ -218,6 +218,7 @@ void SMR::handle_operation(ClientMessage &msg) {
       send_append_entries(rid);
     }
   }
+  return last_idx;
 }
 
 void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
@@ -238,6 +239,7 @@ void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
     }
     if (msg.commit > m_log.curr_commit()) {
       uint64_t new_commit = std::min(msg.commit, m_log.last_index());
+      LOG_F(INFO, "passive commit to %zu\n", new_commit);
       m_log.commit_to(new_commit);
     }
   }

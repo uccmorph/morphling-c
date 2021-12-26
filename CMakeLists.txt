@@ -14,7 +14,6 @@ set(CORE_LIB_NAME morphling)
 set(SOURCES
   core/smr.cpp
   core/morphling.cpp
-  core/transport.cpp
 )
 
 set(SOURCES

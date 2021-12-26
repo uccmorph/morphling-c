@@ -115,8 +115,9 @@ void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> 
     return;
   }
 
-  Morphling::find_target_smr(msg.key_hash).handle_operation(msg);
-  maybe_send_msgs();
+  auto new_idx = Morphling::find_target_smr(msg.key_hash).handle_operation(msg);
+  m_client_pendings[new_idx] = std::move(trans);
+  prepare_msgs();
 }
 
 void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
@@ -126,7 +127,7 @@ void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
   }
 
   m_smrs[msg.group_id].handle_append_entries(msg, from);
-  maybe_send_msgs();
+  prepare_msgs();
 }
 
 
@@ -138,33 +139,74 @@ void Morphling::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int f
 
   m_smrs[msg.group_id].handle_append_entries_reply(msg, from);
   maybe_apply();
-  maybe_send_msgs();
+  prepare_msgs();
 
 }
 
 void Morphling::reply_guidance() {}
 
-bool Morphling::maybe_send_msgs() {
+bool Morphling::prepare_msgs() {
   if (m_next_msgs.size() == 0) {
     return false;
   }
   for (auto &msg : m_next_msgs) {
     switch (msg.type) {
     case MsgTypeAppend:
+      msg.append_msg.from = m_me;
       msg.append_msg.epoch = m_guide.epoch;
       break;
     case MsgTypeAppendReply:
+      msg.append_reply_msg.from = m_me;
       msg.append_reply_msg.epoch = m_guide.epoch;
       break;
     case MsgTypeClient:
+      msg.client_msg.from = m_me;
       msg.client_msg.epoch = m_guide.epoch;
       break;
     }
   }
 }
 
-bool Morphling::maybe_apply() {}
+bool Morphling::maybe_apply() {
+  for (auto &e : m_apply_entries) {
+    LOG_F(INFO, "apply entry: %s", e.debug().c_str());
+    std::string echo_str("hello world!");
+    m_client_pendings[e.index]->send((uint8_t *)echo_str.c_str(), echo_str.size());
+  }
+  m_apply_entries.clear();
+}
+
+void Morphling::bcast_msgs(std::unordered_map<int, std::unique_ptr<Transport>> &peers_trans) {
+  if (m_next_msgs.size() == 0) {
+    return;
+  }
+  for (auto &msg : m_next_msgs) {
+    auto &trans = peers_trans[msg.to];
+    // todo:
+
+    switch (msg.type) {
+    case MsgTypeAppend:
+      trans->send(msg.append_msg);
+      break;
+    case MsgTypeAppendReply:
+      trans->send(msg.append_reply_msg);
+      break;
+    case MsgTypeGuidance:
+      trans->send(msg.guidance_msg);
+      break;
+    }
+  }
+  m_next_msgs.clear();
+}
 
 guidance_t& Morphling::get_guidance() {
   return m_guide;
+}
+
+std::vector<GenericMessage>& Morphling::debug_next_msgs() {
+  return m_next_msgs;
+}
+
+std::vector<Entry>& Morphling::debug_apply_entries() {
+  return m_apply_entries;
 }
