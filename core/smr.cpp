@@ -7,7 +7,7 @@
 #include <utility>
 #include "loguru.hpp"
 
-SMRLog::SMRLog() : m_dummy_entry(0, 0) { m_log.reserve(10000); }
+SMRLog::SMRLog() : m_dummy_entry(0, 0) { m_log.reserve(1000000); }
 
 uint64_t SMRLog::entry_pos(uint64_t e_index) {
   if (e_index == 0) {
@@ -29,15 +29,15 @@ void SMRLog::show_all() {
 
 uint64_t SMRLog::append(Entry &e, uint64_t epoch) {
   if (m_log.size() == 0) {
-    m_log.emplace_back(e.data);
-    auto &new_e = m_log.back();
+    auto &new_e = m_log.emplace_back(e.data);
     new_e.index = 1;
     new_e.epoch = epoch;
     return 1;
   }
+  // caveat: After emplace new data, vector may change its size, resulting a stale last_e reference
+  // see https://en.cppreference.com/w/cpp/container/vector/emplace_back
   auto &last_e = m_log.back();
-  m_log.emplace_back(e.data);
-  auto &new_e = m_log.back();
+  auto &new_e = m_log.emplace_back(e.data);
   new_e.index = last_e.index + 1;
   new_e.epoch = epoch;
 

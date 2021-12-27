@@ -33,8 +33,9 @@ add_executable(server app/server.cpp)
 set_target_properties(server PROPERTIES LINK_FLAGS -pthread)
 target_link_libraries(server ${CORE_LIB_NAME} event)
 
-add_executable(client app/client.cpp)
+add_executable(client app/client.cpp loguru/loguru.cpp)
 set_target_properties(client PROPERTIES LINK_FLAGS -pthread)
+target_link_libraries(client dl)
 
 # gtest
 # after install gtest, /usr/local/lib/cmake/GTest should exist

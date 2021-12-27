@@ -41,7 +41,6 @@ TEST(SMRLogTest, TruncateTest) {
   }
 
   smr_log.truncate(3);
-  EXPECT_ANY_THROW(smr_log.entry_at(3));
   EXPECT_EQ(smr_log.last_index(), 2);
   smr_log.show_all();
 
@@ -75,6 +74,21 @@ TEST(SMRLogTest, CommitTest) {
   res = smr_log.commit_to(5);
   EXPECT_TRUE(res);
 
-  EXPECT_ANY_THROW(smr_log.commit_to(6));
+  smr_log.show_all();
+}
+
+TEST(SMRLogTest, HeavyAppendTest) {
+  size_t log_size = 100000;
+  auto test_entries = generate_test_entries(log_size);
+
+  SMRLog smr_log;
+  EXPECT_EQ(smr_log.entry_at(0).index, 0);
+  EXPECT_EQ(smr_log.last_index(), 0);
+  for (size_t i = 0; i < log_size; i++) {
+    auto idx = smr_log.append(test_entries[i]);
+    EXPECT_EQ(smr_log.entry_at(idx).index, i+1);
+
+    EXPECT_EQ(smr_log.last_index(), i+1);
+  }
   smr_log.show_all();
 }

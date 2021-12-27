@@ -4,7 +4,9 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "${workspaceFolder}/loguru"
+                "${workspaceFolder}/loguru",
+                "${workspaceFolder}/loguru",
+                "${workspaceFolder}/core"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

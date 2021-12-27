@@ -117,25 +117,38 @@ void msg_unpck_msg(T &&target, uint8_t *buf, size_t size) {
   oh.get().convert(target);
 }
 
+void full_read(struct bufferevent *bev, uint8_t *buf, size_t size) {
+  size_t remain_size = size;
+  size_t turn_read_n = 0;
+  size_t finish_read_n = 0;
+  while (remain_size > 0) {
+    turn_read_n = bufferevent_read(bev, buf + finish_read_n, remain_size);
+    remain_size -= turn_read_n;
+    finish_read_n += turn_read_n;
+  }
+}
+
 void parse_and_feed_msg(struct bufferevent *bev, void *ctx) {
   Server *server = (Server *)ctx;
   // 2048 may be too small for large msg
   char tmp[2048] = {0};
   size_t rpc_header_size = 4;
-  size_t n = bufferevent_read(bev, tmp, rpc_header_size);
-  assert(n == rpc_header_size);
-
+  // size_t n = bufferevent_read(bev, tmp, rpc_header_size);
+  // assert(n == rpc_header_size);
+  full_read(bev, (uint8_t *)tmp, rpc_header_size);
   uint32_t payload_size = 0;
   for (int i = 0; i < rpc_header_size - 1; i++) {
-    payload_size = payload_size | ((tmp[i] & 0xFFFFFFFF) << (i * 8));
+    payload_size = payload_size | ((tmp[i] & 0x000000FF) << (i * 8));
+    LOG_F(INFO, "tmp %d: 0x%x", i, tmp[i]);
   }
   MessageType msg_type = (MessageType)(tmp[3] & 0x000000FF);
 
   LOG_F(INFO, "payload size: %u", payload_size);
   LOG_F(INFO, "msg type: %d", msg_type);
 
-  n = bufferevent_read(bev, tmp, payload_size);
-  assert(n == payload_size);
+  // n = bufferevent_read(bev, tmp, payload_size);
+  // assert(n == payload_size);
+  full_read(bev, (uint8_t *)tmp, payload_size);
 
   if (msg_type == MsgTypeAppend) {
     AppendEntriesMessage msg;
@@ -309,14 +322,17 @@ void Server::periodic_peer(int id) {
   event_add(ev_period, &one_sec);
 }
 
-int main(int argc, char **argv) {
-  int id = 0;
+int id = 0;
+std::vector<std::string> peers_addr;
 
-  static struct option long_options[] = {{"id", required_argument, 0, 0},
-                                         {0, 0, 0, 0}};
+bool parse_cmd(int argc, char **argv) {
+  static struct option long_options[] = {
+      {"id", required_argument, nullptr, 0},
+      {"peers-addr", required_argument, nullptr, 0},
+      {0, 0, 0, 0}};
   int c = 0;
   bool fail = false;
-  bool mandatory1 = false;
+  int mandatory = 0;
   while (!fail) {
     int option_index = 0;
     c = getopt_long(argc, argv, "", long_options, &option_index);
@@ -325,9 +341,28 @@ int main(int argc, char **argv) {
       case 0:
         switch (option_index) {
           case 0:
-            LOG_F(INFO, "id = %s", optarg);
-            mandatory1 = true;
+            LOG_F(1, "id = %s", optarg);
+            mandatory += 1;
             id = std::stoi(optarg);
+            break;
+
+          case 1:
+            LOG_F(1, "peers: %s", optarg);
+            mandatory += 1;
+            std::string arg(optarg);
+            size_t pos = 0;
+            size_t old_pos = pos;
+            while (true) {
+              pos = arg.find(",", old_pos);
+              if (pos == std::string::npos) {
+                peers_addr.push_back(arg.substr(old_pos));
+                break;
+              } else {
+                peers_addr.push_back(arg.substr(old_pos, pos - old_pos));
+                old_pos = pos + 1;
+              }
+            }
+            break;
         }
 
         break;
@@ -336,17 +371,29 @@ int main(int argc, char **argv) {
         LOG_F(ERROR, "unknown arg: %c", c);
     }
   }
-  if (fail || !mandatory1) {
-    LOG_F(ERROR, "support args: --id");
+  if (fail || mandatory != 2) {
+    LOG_F(ERROR, "needs args: --id");
+    LOG_F(ERROR, "needs args: --peers-addr, a comma separated string, like <ip1>,<ip2>,<ip3>");
+    LOG_F(ERROR, "current peers' ports are hard coded: 9990, 9991 and 9992");
+    return false;
+  }
+
+  return true;
+}
+
+int main(int argc, char **argv) {
+  loguru::init(argc, argv);
+
+  if (!parse_cmd(argc, argv)) {
     return 1;
   }
 
   std::vector<int> peers{0, 1, 2};
   Server server(id, peers);
 
-  server.m_peer_addresses[0] = std::string("127.0.0.1");
-  server.m_peer_addresses[1] = std::string("127.0.0.1");
-  server.m_peer_addresses[2] = std::string("127.0.0.1");
+  server.m_peer_addresses[0] = peers_addr[0];
+  server.m_peer_addresses[1] = peers_addr[1];
+  server.m_peer_addresses[2] = peers_addr[2];
 
   server.m_peer_port[0] = 9990;
   server.m_peer_port[1] = 9991;
