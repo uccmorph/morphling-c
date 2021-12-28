@@ -18,10 +18,15 @@
 #include "message.h"
 #include "smr.h"
 
-int port = 9990;
-std::string ip;
-int send_nums = 0;
-bool is_read = false;
+int cfg_port = 9990;
+std::string cfg_ip;
+int cfg_send_nums = 0;
+bool cfg_is_read = false;
+int cfg_msg_size = 1000;
+
+std::vector<std::chrono::steady_clock::time_point> measure_probe1;
+std::vector<std::chrono::steady_clock::time_point> measure_probe2;
+std::vector<std::chrono::steady_clock::time_point> measure_probe3;
 
 bool parse_cmd(int argc, char **argv) {
   int has_default = 0;
@@ -30,6 +35,7 @@ bool parse_cmd(int argc, char **argv) {
       {"port", required_argument, nullptr, 0},
       {"nums", required_argument, nullptr, 0},
       {"ro", no_argument, &has_default, 0},
+      {"ms", required_argument, nullptr, 0},
       {0, 0, 0, 0}};
   
   int c = 0;
@@ -43,28 +49,32 @@ bool parse_cmd(int argc, char **argv) {
       case 0:
         switch (option_index) {
           case 0:
-            ip = optarg;
-            LOG_F(1, "ip = %s\n", ip.c_str());
+            cfg_ip = optarg;
+            LOG_F(1, "ip = %s", cfg_ip.c_str());
             mandatory += 1;
             break;
           case 1:
-            port = std::stoi(optarg);
-            LOG_F(1, "port = %d\n", port);
+            cfg_port = std::stoi(optarg);
+            LOG_F(1, "port = %d", cfg_port);
             mandatory += 1;
             break;
           case 2:
-            send_nums = std::stoi(optarg);
-            LOG_F(1, "total number %d\n", send_nums);
+            cfg_send_nums = std::stoi(optarg);
+            LOG_F(1, "total number %d", cfg_send_nums);
             mandatory += 1;
             break;
           case 3:
-            is_read = true;
+            cfg_is_read = true;
+            LOG_F(1, "enable read only");
             break;
+          case 4:
+            cfg_msg_size = std::stoi(optarg);
+            LOG_F(1, "payload data size: %d", cfg_msg_size);
         }
 
         break;
       default:
-        LOG_F(ERROR, "unknown arg: %c\n", c);
+        LOG_F(ERROR, "unknown arg: %c", c);
         fail = true;
       
     }
@@ -72,7 +82,7 @@ bool parse_cmd(int argc, char **argv) {
 
   
   if (fail || mandatory != 3) {
-    printf("need --ip, --port, --nums\n");
+    LOG_F(ERROR, "need --ip, --port, --nums");
     return false;
   }
   return true;
@@ -86,56 +96,58 @@ std::string default_data(int size) {
   return res;
 }
 
-int send_loop(int fd, std::string &query) {
-  char buf[2048];
-  /* Write the query. */
-  /* XXX Can send succeed partially? */
-  Operation op{
-    .op_type = is_read ? 0 : 1,
-    .key_hash = 0x5499,
-    .data = std::vector<uint8_t>(query.begin(), query.end()),
-  };
+void pack_msg(Operation &op, ClientMessage &msg, char *dest, size_t &size) {
   std::stringstream ss;
   msgpack::pack(ss, op);
   const std::string &op_str = ss.str();
-  ClientMessage msg{
-    .epoch = 1,
-    .key_hash = 0x5499,
-    .op = std::vector<uint8_t>(op_str.begin(), op_str.end()),
-  };
-  LOG_F(3, "op buf size: %zu\n", op_str.size());
 
+  msg.op = std::vector<uint8_t>(op_str.begin(), op_str.end());
   std::stringstream ss2;
   msgpack::pack(ss2, msg);
   const std::string &msg_buf = ss2.str();
   uint32_t msg_size = msg_buf.size();
-  LOG_F(3, "msg_size = 0x%08x\n", msg_size);
+  LOG_F(3, "msg_size = 0x%08x", msg_size);
   for (int i = 0; i < 4; i++) {
-    LOG_F(3, "after shift %d: %x\n", i * 2, (msg_size >> (i * 8)));
-    buf[i] = (msg_size >> (i * 8)) & 0xFF;
-    LOG_F(3, "buf %d is 0x%x\n", i, buf[i]);
+    LOG_F(3, "after shift %d: %x", i * 2, (msg_size >> (i * 8)));
+    dest[i] = (msg_size >> (i * 8)) & 0xFF;
+    LOG_F(3, "buf %d is 0x%x", i, dest[i]);
   }
-  buf[3] = MessageType::MsgTypeClient & 0xFF;
+  dest[3] = MessageType::MsgTypeClient & 0xFF;
 
   assert(msg_buf.size() < 2000);
-  memcpy(&buf[4], msg_buf.c_str(), msg_buf.size());
-  int n = send(fd, buf, 4 + msg_buf.size(), 0);
+  memcpy(&dest[4], msg_buf.c_str(), msg_buf.size());
+  size = 4 + msg_buf.size();
+}
 
+int send_loop(int fd, std::string &query) {
+  measure_probe1.emplace_back(std::chrono::steady_clock::now());
+  char buf[2048];
+  Operation op{
+    .op_type = cfg_is_read ? 0 : 1,
+    .key_hash = 0x5499,
+    .data = std::vector<uint8_t>(query.begin(), query.end()),
+  };
+  ClientMessage msg{
+    .epoch = 1,
+    .key_hash = 0x5499,
+  };
+
+  size_t total_size = 0;
+  pack_msg(op, msg, buf, total_size);
+
+  int n = send(fd, buf, total_size, 0);
+  measure_probe2.emplace_back(std::chrono::steady_clock::now());
   // n = send(fd, msg_buf.c_str(), msg_buf.size(), 0);
-  LOG_F(3, "send real length: %zu\n", n);
-
-  ClientMessage r_msg;
-  auto oh = msgpack::unpack(msg_buf.c_str(), msg_buf.size());
-  oh.get().convert(r_msg);
-  LOG_F(3, "client: epoch: %zu, key_hash: %zu, op size: %zu\n", r_msg.epoch, r_msg.key_hash, r_msg.op.size());
+  LOG_F(3, "send real length: %zu", n);
 
   memset(buf, 0, 1024);
   int readn = recv(fd, (void *)buf, 1024, 0);
-  LOG_F(3, "receive %d bytes: %s\n", readn, buf);
+  LOG_F(3, "receive %d bytes: %s", readn, buf);
+  measure_probe3.emplace_back(std::chrono::steady_clock::now());
 }
 
 int run() {
-  const char *server_ip = ip.c_str();
+  const char *server_ip = cfg_ip.c_str();
   struct sockaddr_in sin;
   int fd;
   
@@ -150,7 +162,7 @@ int run() {
 
   /* Connect to the remote host. */
   sin.sin_family = AF_INET;
-  sin.sin_port = htons(port);
+  sin.sin_port = htons(cfg_port);
   res = inet_aton(server_ip, &sin.sin_addr);
   if (connect(fd, (struct sockaddr *)&sin, sizeof(sin))) {
     perror("connect");
@@ -158,10 +170,14 @@ int run() {
     return 1;
   }
 
-  std::string query = default_data(1000);
+  measure_probe1.reserve(cfg_send_nums);
+  measure_probe2.reserve(cfg_send_nums);
+  measure_probe3.reserve(cfg_send_nums);
+
+  std::string query = default_data(cfg_msg_size);
   std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-  for (int i = 0; i < send_nums; i++) {
+  for (int i = 0; i < cfg_send_nums; i++) {
     send_loop(fd, query);
   }
   std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
@@ -169,6 +185,24 @@ int run() {
   diff *= 1e-9;
 
   LOG_F(INFO, "total test time: %f s", diff);
+
+  double interval1_avg = 0.0;
+  double interval2_avg = 0.0;
+  for (int i = 0; i < cfg_send_nums; i++) {
+    double interval1 = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           measure_probe2[i] - measure_probe1[i])
+                           .count();
+    double interval2 = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           measure_probe3[i] - measure_probe2[i])
+                           .count();                   
+    interval1 *= 1e-3;
+    interval2 *= 1e-3;
+    LOG_F(INFO, "send loop %d, interval1 = %f us, interval2 = %f us", i, interval1, interval2);
+    interval1_avg += interval1;
+    interval2_avg += interval2;
+  }
+
+  LOG_F(INFO, "interval1 avg: %f us, interval2 avg: %f us", interval1_avg/cfg_send_nums, interval2_avg/cfg_send_nums);
 
   close(fd);
 

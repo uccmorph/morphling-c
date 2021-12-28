@@ -20,10 +20,10 @@ uint64_t SMRLog::entry_pos(uint64_t e_index) {
 }
 
 void SMRLog::show_all() {
-  LOG_F(INFO, "log size: %zu, dummy entry (epoch %zu, index %zu), commit: %zu",
+  LOG_F(3, "log size: %zu, dummy entry (epoch %zu, index %zu), commit: %zu",
         m_log.size(), m_dummy_entry.epoch, m_dummy_entry.index, m_commits);
   for (auto itr = m_log.begin(); itr != m_log.end(); itr++) {
-    LOG_F(INFO, "itr %ld, %s", itr - m_log.begin(), (*itr).debug().c_str());
+    LOG_F(3, "itr %ld, %s", itr - m_log.begin(), (*itr).debug().c_str());
   }
 }
 
@@ -239,7 +239,7 @@ void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
     }
     if (msg.commit > m_log.curr_commit()) {
       uint64_t new_commit = std::min(msg.commit, m_log.last_index());
-      LOG_F(INFO, "passive commit to %zu\n", new_commit);
+      LOG_F(3, "passive commit to %zu\n", new_commit);
       m_log.commit_to(new_commit);
     }
   }
@@ -253,12 +253,12 @@ void SMR::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from) {
     // tbd. nextIndex and matchIndex may not be realistic.
     return;
   }
-  LOG_F(INFO, "peer %d vote for entry %zu", from, msg.index);
+  LOG_F(3, "peer %d vote for entry %zu", from, msg.index);
   if (m_entry_votes.vote(from, msg.index)) {
     uint64_t old_commit = m_log.curr_commit();
     bool ok = m_log.commit_to(msg.index);
     if (ok) {
-      LOG_F(INFO, "entry %zu is newly committed", msg.index);
+      LOG_F(3, "entry %zu is newly committed", msg.index);
       auto apply_entries = m_log.get_part_entries(old_commit+1, msg.index);
       m_cb.notify_apply(apply_entries);
     }

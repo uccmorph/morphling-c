@@ -37,6 +37,10 @@ add_executable(client app/client.cpp loguru/loguru.cpp)
 set_target_properties(client PROPERTIES LINK_FLAGS -pthread)
 target_link_libraries(client dl)
 
+add_executable(client2 app/client2.cpp loguru/loguru.cpp)
+set_target_properties(client2 PROPERTIES LINK_FLAGS -pthread)
+target_link_libraries(client2 dl)
+
 # gtest
 # after install gtest, /usr/local/lib/cmake/GTest should exist
 enable_testing()

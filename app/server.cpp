@@ -10,11 +10,14 @@
 #include <sys/socket.h>
 
 #include <unordered_map>
+#include <chrono>
 
 #include <loguru.hpp>
 
 #include "morphling.h"
 #include "transport.h"
+
+#include "utils.cpp"
 
 class SocketTransport : public Transport {
   bufferevent *m_bev;
@@ -31,13 +34,13 @@ class SocketTransport : public Transport {
 };
 
 void SocketTransport::send(uint8_t *buf, uint64_t size) {
-  LOG_F(INFO, "[%s] send %zu bytes", __FUNCTION__, size);
+  LOG_F(3, "[%s] send %zu bytes", __FUNCTION__, size);
 
   bufferevent_write(m_bev, buf, size);
 }
 
 void SocketTransport::__send(MessageType type, uint8_t *payload, uint64_t payload_size) {
-  LOG_F(INFO, "[%s] send %zu bytes", __FUNCTION__, payload_size);
+  LOG_F(3, "[%s] send %zu bytes", __FUNCTION__, payload_size);
 
   char header_buf[4];
   for (int i = 0; i < 4; i++) {
@@ -49,28 +52,24 @@ void SocketTransport::__send(MessageType type, uint8_t *payload, uint64_t payloa
 }
 
 void SocketTransport::send(AppendEntriesMessage &msg) {
-  LOG_F(INFO, "send AppendEntriesMessage\n");
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
   SocketTransport::__send(MsgTypeAppend, (uint8_t *)stream.str().data(), stream.str().size());
 }
 void SocketTransport::send(AppenEntriesReplyMessage &msg) {
-  LOG_F(INFO, "send AppenEntriesReplyMessage\n");
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
   SocketTransport::__send(MsgTypeAppendReply, (uint8_t *)stream.str().data(), stream.str().size());
 }
 void SocketTransport::send(ClientMessage &msg) {
-  LOG_F(INFO, "send ClientMessage\n");
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
   SocketTransport::__send(MsgTypeClient, (uint8_t *)stream.str().data(), stream.str().size());
 }
 void SocketTransport::send(GuidanceMessage &msg) {
-  LOG_F(INFO, "send GuidanceMessage\n");
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
@@ -98,11 +97,17 @@ class Server {
   struct event_base *m_base;
   int m_me;
   std::vector<int> m_peers;
+  std::vector<std::chrono::steady_clock::time_point> m_measure_probe1;
+  std::vector<std::chrono::steady_clock::time_point> m_measure_probe2;
+  std::vector<std::chrono::steady_clock::time_point> m_measure_probe3;
 
   Server(int id, std::vector<int> &peers)
       : m_mpreplica(id, peers), m_me(id), m_peers(peers) {
     struct event_base *base = event_base_new();
     m_base = base;
+    m_measure_probe1.reserve(100000);
+    m_measure_probe2.reserve(100000);
+    m_measure_probe3.reserve(100000);
   }
 
   void run();
@@ -135,20 +140,24 @@ void parse_and_feed_msg(struct bufferevent *bev, void *ctx) {
   size_t rpc_header_size = 4;
   // size_t n = bufferevent_read(bev, tmp, rpc_header_size);
   // assert(n == rpc_header_size);
+  // server->m_measure_probe1.emplace_back(std::chrono::steady_clock::now());
+  std::chrono::steady_clock::time_point probe1 = std::chrono::steady_clock::now();
   full_read(bev, (uint8_t *)tmp, rpc_header_size);
   uint32_t payload_size = 0;
   for (int i = 0; i < rpc_header_size - 1; i++) {
     payload_size = payload_size | ((tmp[i] & 0x000000FF) << (i * 8));
-    LOG_F(INFO, "tmp %d: 0x%x", i, tmp[i]);
+    LOG_F(3, "tmp %d: 0x%x", i, tmp[i]);
   }
   MessageType msg_type = (MessageType)(tmp[3] & 0x000000FF);
 
-  LOG_F(INFO, "payload size: %u", payload_size);
-  LOG_F(INFO, "msg type: %d", msg_type);
+  LOG_F(3, "payload size: %u", payload_size);
+  LOG_F(3, "msg type: %d", msg_type);
 
   // n = bufferevent_read(bev, tmp, payload_size);
   // assert(n == payload_size);
   full_read(bev, (uint8_t *)tmp, payload_size);
+  // server->m_measure_probe2.emplace_back(std::chrono::steady_clock::now());
+  std::chrono::steady_clock::time_point probe2 = std::chrono::steady_clock::now();
 
   if (msg_type == MsgTypeAppend) {
     AppendEntriesMessage msg;
@@ -174,10 +183,18 @@ void parse_and_feed_msg(struct bufferevent *bev, void *ctx) {
     auto oh = msgpack::unpack(tmp, payload_size);
     oh.get().convert(msg);
   }
+  // server->m_measure_probe3.emplace_back(std::chrono::steady_clock::now());
+  std::chrono::steady_clock::time_point probe3 = std::chrono::steady_clock::now();
+
+  double interval1 = std::chrono::duration_cast<std::chrono::nanoseconds>(probe2 - probe1).count();
+  double interval2 = std::chrono::duration_cast<std::chrono::nanoseconds>(probe3 - probe2).count();
+
+  interval1 *= 1e-3;
+  interval2 *= 1e-3;
+  LOG_F(INFO, "Msg: %d, interval1: %f us, interval2: %f us", msg_type, interval1, interval2);
 }
 
 void read_cb(struct bufferevent *bev, void *ctx) {
-  LOG_F(INFO, "read_cb");
 
   parse_and_feed_msg(bev, ctx);
 }
@@ -185,7 +202,7 @@ void read_cb(struct bufferevent *bev, void *ctx) {
 void event_cb(struct bufferevent *bev, short what, void *ctx) {
   int needfree = 0;
 
-  LOG_F(INFO, "[%s:%d] event_cb new event 0x%x", __FUNCTION__, __LINE__, what);
+  LOG_F(3, "[%s:%d] event_cb new event 0x%x", __FUNCTION__, __LINE__, what);
 
   if (what & BEV_EVENT_EOF || what & BEV_EVENT_TIMEOUT ||
       what & BEV_EVENT_ERROR) {
@@ -207,15 +224,13 @@ void listener_cb(struct evconnlistener *l, evutil_socket_t nfd,
   struct bufferevent *bev =
       bufferevent_socket_new(server->m_base, nfd, BEV_OPT_CLOSE_ON_FREE);
   assert(bev);
-  LOG_F(INFO, "new bufferevent at %p", bev);
-
 
   char *ip = inet_ntoa(((struct sockaddr_in *)addr)->sin_addr);
   uint16_t port = ntohs(((struct sockaddr_in *)addr)->sin_port);
-  LOG_F(INFO, "accept new connection: %s:%u", ip, port);
+  LOG_F(3, "accept new connection: %s:%u", ip, port);
 
   bufferevent_setcb(bev, read_cb, nullptr, event_cb, ctx);
-  bufferevent_enable(bev, EV_READ | EV_PERSIST);
+  bufferevent_enable(bev, EV_READ | EV_PERSIST | EV_ET);
 }
 
 void signal_cb(evutil_socket_t sig, short events, void *arg) {
@@ -296,7 +311,7 @@ bool Server::connect_peer(int id) {
       peer.socket_bev, nullptr, nullptr,
       [](struct bufferevent *bev, short what, void *arg) {
         PeerContext *ctx = (PeerContext *)arg;
-        LOG_F(INFO, "get event: 0x%x, from peer %d", what, ctx->id);
+        LOG_F(3, "get event: 0x%x, from peer %d", what, ctx->id);
         if (what & BEV_EVENT_CONNECTED) {
           ctx->proactive_connected = true;
         }
@@ -349,19 +364,7 @@ bool parse_cmd(int argc, char **argv) {
           case 1:
             LOG_F(1, "peers: %s", optarg);
             mandatory += 1;
-            std::string arg(optarg);
-            size_t pos = 0;
-            size_t old_pos = pos;
-            while (true) {
-              pos = arg.find(",", old_pos);
-              if (pos == std::string::npos) {
-                peers_addr.push_back(arg.substr(old_pos));
-                break;
-              } else {
-                peers_addr.push_back(arg.substr(old_pos, pos - old_pos));
-                old_pos = pos + 1;
-              }
-            }
+            parse_addr(optarg, peers_addr);
             break;
         }
 

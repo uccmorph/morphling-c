@@ -6,7 +6,8 @@
                 "${workspaceFolder}/**",
                 "${workspaceFolder}/loguru",
                 "${workspaceFolder}/loguru",
-                "${workspaceFolder}/core"
+                "${workspaceFolder}/core",
+                "${workspaceFolder}/loguru"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

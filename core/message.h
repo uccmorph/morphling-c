@@ -16,6 +16,7 @@ enum MessageType {
   MsgTypeAppendReply,
   MsgTypeClient,
   MsgTypeGuidance,
+  MsgTypeGetGuidance,
 };
 
 struct AppendEntriesMessage {

@@ -169,7 +169,7 @@ bool Morphling::prepare_msgs() {
 
 bool Morphling::maybe_apply() {
   for (auto &e : m_apply_entries) {
-    LOG_F(INFO, "apply entry: %s", e.debug().c_str());
+    LOG_F(3, "apply entry: %s", e.debug().c_str());
     std::string echo_str("hello world!");
     m_client_pendings[e.index]->send((uint8_t *)echo_str.c_str(), echo_str.size());
   }
