@@ -153,6 +153,16 @@ void parse_and_feed_msg(struct bufferevent *bev, void *ctx) {
   LOG_F(3, "payload size: %u", payload_size);
   LOG_F(3, "msg type: %d", msg_type);
 
+  if (msg_type != MsgTypeAppend || msg_type != MsgTypeAppendReply ||
+      msg_type != MsgTypeClient || msg_type != MsgTypeGuidance) {
+    LOG_F(3, "reply with 404-like message");
+    std::unique_ptr<Transport> trans = std::make_unique<SocketTransport>(bev);
+    std::stringstream error_msg;
+    error_msg << "error: don't have handler for " << msg_type << "\n";
+    trans->send((uint8_t *)error_msg.str().c_str(), error_msg.str().size());
+    return;
+  }
+
   // n = bufferevent_read(bev, tmp, payload_size);
   // assert(n == payload_size);
   full_read(bev, (uint8_t *)tmp, payload_size);
