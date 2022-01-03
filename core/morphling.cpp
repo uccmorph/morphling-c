@@ -107,7 +107,12 @@ void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> 
   if (op.get()->op_type == 0) {
     // send echo msg
     std::string echo_str("hello world!");
-    trans->send((uint8_t *)echo_str.c_str(), echo_str.size());
+    ClientMessage reply;
+    reply.epoch = m_guide.epoch;
+    reply.from = m_me;
+    reply.key_hash = msg.key_hash;
+
+    trans->send(reply);
     return;
   }
 
