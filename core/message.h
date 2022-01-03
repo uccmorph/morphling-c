@@ -12,6 +12,7 @@
 struct Entry;
 
 enum MessageType {
+  MsgTypeUnknown = -1,
   MsgTypeAppend,
   MsgTypeAppendReply,
   MsgTypeClient,
@@ -53,7 +54,7 @@ struct Operation {
 
 struct ClientMessage {
   int from;
-  // guidance_t guidance;
+  // Guidance guidance;
   uint64_t epoch;
   uint64_t key_hash;
   // size_t data_size;
@@ -64,10 +65,15 @@ struct ClientMessage {
 
 struct GuidanceMessage {
   int from;
-  guidance_t guide;
+  Guidance guide;
   int votes;
 
-  MSGPACK_DEFINE(from, guide, votes);
+  // MSGPACK_DEFINE(from, guide, votes);
+};
+
+struct InitMessage {
+  int from;
+  Guidance guide;
 };
 
 struct GenericMessage {

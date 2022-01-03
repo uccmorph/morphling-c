@@ -18,6 +18,8 @@
 #include "message.h"
 #include "smr.h"
 
+#include "utils.cpp"
+
 int cfg_port = 9990;
 std::string cfg_ip;
 int cfg_send_nums = 0;
@@ -37,7 +39,7 @@ bool parse_cmd(int argc, char **argv) {
       {"ro", no_argument, &has_default, 0},
       {"ms", required_argument, nullptr, 0},
       {0, 0, 0, 0}};
-  
+
   int c = 0;
   bool fail = false;
   int mandatory = 0;
@@ -76,11 +78,11 @@ bool parse_cmd(int argc, char **argv) {
       default:
         LOG_F(ERROR, "unknown arg: %c", c);
         fail = true;
-      
+
     }
   }
 
-  
+
   if (fail || mandatory != 3) {
     LOG_F(ERROR, "need --ip, --port, --nums");
     return false;
@@ -94,29 +96,6 @@ std::string default_data(int size) {
     res.append("a");
   }
   return res;
-}
-
-void pack_msg(Operation &op, ClientMessage &msg, char *dest, size_t &size) {
-  std::stringstream ss;
-  msgpack::pack(ss, op);
-  const std::string &op_str = ss.str();
-
-  msg.op = std::vector<uint8_t>(op_str.begin(), op_str.end());
-  std::stringstream ss2;
-  msgpack::pack(ss2, msg);
-  const std::string &msg_buf = ss2.str();
-  uint32_t msg_size = msg_buf.size();
-  LOG_F(3, "msg_size = 0x%08x", msg_size);
-  for (int i = 0; i < 4; i++) {
-    LOG_F(3, "after shift %d: %x", i * 2, (msg_size >> (i * 8)));
-    dest[i] = (msg_size >> (i * 8)) & 0xFF;
-    LOG_F(3, "buf %d is 0x%x", i, dest[i]);
-  }
-  dest[3] = MessageType::MsgTypeClient & 0xFF;
-
-  assert(msg_buf.size() < 2000);
-  memcpy(&dest[4], msg_buf.c_str(), msg_buf.size());
-  size = 4 + msg_buf.size();
 }
 
 int send_loop(int fd, std::string &query) {
@@ -133,7 +112,7 @@ int send_loop(int fd, std::string &query) {
   };
 
   size_t total_size = 0;
-  pack_msg(op, msg, buf, total_size);
+  pack_operation(op, msg, (uint8_t *)buf, total_size);
 
   int n = send(fd, buf, total_size, 0);
   measure_probe2.emplace_back(std::chrono::steady_clock::now());
@@ -150,7 +129,7 @@ int run() {
   const char *server_ip = cfg_ip.c_str();
   struct sockaddr_in sin;
   int fd;
-  
+
   int res = 0;
 
   /* Allocate a new socket */
@@ -194,7 +173,7 @@ int run() {
                            .count();
     double interval2 = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            measure_probe3[i] - measure_probe2[i])
-                           .count();                   
+                           .count();
     interval1 *= 1e-3;
     interval2 *= 1e-3;
     LOG_F(INFO, "send loop %d, interval1 = %f us, interval2 = %f us", i, interval1, interval2);

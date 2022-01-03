@@ -11,8 +11,10 @@ const int DEFAULT_KEY_SPACE = 256;
 const uint64_t DEFAULT_KEY_MASK = 0xff00ul;
 const int DEFAULT_MASK_OFFSET = 8;
 
+int calc_key_pos(uint64_t key_hash);
+
 class Morphling {
-  guidance_t m_guide;
+  Guidance m_guide;
   int m_me;
   std::vector<int> m_peers;
   std::vector<SMR> m_smrs;
@@ -24,7 +26,6 @@ class Morphling {
 
  private:
   void init_local_guidance(int key_space = DEFAULT_KEY_SPACE);
-  int calc_key_pos(uint64_t key_hash);
   bool is_valid_guidance(uint64_t epoch);
   SMR& find_target_smr(uint64_t key_hash);
   bool prepare_msgs();
@@ -39,12 +40,14 @@ class Morphling {
   void handle_operation(ClientMessage &msg, std::unique_ptr<Transport> &&trans);
   void handle_append_entries(AppendEntriesMessage &msg, int from);
   void handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from);
-  void reply_guidance();
+
 
   void bcast_msgs(std::unordered_map<int, std::unique_ptr<Transport>> &peers_trans);
   bool maybe_apply();
+  void reply_guidance(int id);
+  void reply_guidance(std::unique_ptr<Transport> &&trans);
 
-  guidance_t& get_guidance();
+  Guidance& get_guidance();
 
   std::vector<GenericMessage>& debug_next_msgs();
   std::vector<Entry>& debug_apply_entries();

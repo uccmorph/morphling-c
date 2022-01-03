@@ -2,6 +2,10 @@
 #include <loguru.hpp>
 #include "morphling.h"
 
+int calc_key_pos(uint64_t key_hash) {
+  return (key_hash & DEFAULT_KEY_MASK) >> DEFAULT_MASK_OFFSET;
+}
+
 Morphling::Morphling(int id, std::vector<int> &peers)
     : m_me(id), m_peers(peers) {
   Morphling::init_local_guidance();
@@ -55,26 +59,18 @@ void Morphling::init_local_guidance(int key_space) {
           HARD_CODE_REPLICAS);
     exit(-1);
   }
-  uint32_t alive = m_peers.size();
+
   uint32_t cluster_size = m_peers.size();
-  m_guide.status = 0x0;
 
-  // assume never exceed 8 bits
-  m_guide.status |= alive;
-  m_guide.status |= (cluster_size << guidance_offset_cluster);
+  m_guide.set_cluster_size(cluster_size);
+  m_guide.set_alive_num(cluster_size);
+
   for (int i = 0; i < cluster_size; i++) {
-    m_guide.cluster[i].status = 0;
-
     uint32_t start_key_pos = uint32_t(i * key_space) / cluster_size;
-    uint32_t end_key_pos = uint32_t((i + 1) * key_space) / cluster_size;
-    m_guide.cluster[i].status |= (start_key_pos << 0);
-    m_guide.cluster[i].status |= (end_key_pos << node_status_offset_end);
-    m_guide.cluster[i].status |= (0x1 << node_status_offset_flags);
+    uint32_t end_key_pos = uint32_t((i + 1) * key_space) / cluster_size - 1;
+    m_guide.cluster[i].set_pos(start_key_pos, end_key_pos);
+    m_guide.cluster[i].set_alive();
   }
-}
-
-int Morphling::calc_key_pos(uint64_t key_hash) {
-  return key_hash & DEFAULT_KEY_MASK >> DEFAULT_MASK_OFFSET;
 }
 
 bool Morphling::is_valid_guidance(uint64_t epoch) {
@@ -103,7 +99,7 @@ std::unique_ptr<Operation> Morphling::parse_operation(std::vector<uint8_t> data)
 
 void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> &&trans) {
   if (!is_valid_guidance(msg.epoch)) {
-    reply_guidance();
+    reply_guidance(std::move(trans));
     return;
   }
 
@@ -122,7 +118,7 @@ void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> 
 
 void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
   if (!is_valid_guidance(msg.epoch)) {
-    reply_guidance();
+    reply_guidance(from);
     return;
   }
 
@@ -133,17 +129,29 @@ void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
 
 void Morphling::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from) {
   if (!is_valid_guidance(msg.epoch)) {
-    reply_guidance();
+    reply_guidance(from);
     return;
   }
 
   m_smrs[msg.group_id].handle_append_entries_reply(msg, from);
-  maybe_apply();
   prepare_msgs();
-
 }
 
-void Morphling::reply_guidance() {}
+void Morphling::reply_guidance(int id) {
+  GuidanceMessage msg;
+  msg.from = m_me;
+  msg.guide = m_guide;
+  msg.votes = 3;
+  m_next_msgs.push_back(GenericMessage(msg, id));
+}
+
+void Morphling::reply_guidance(std::unique_ptr<Transport> &&trans) {
+  GuidanceMessage msg;
+  msg.from = m_me;
+  msg.guide = m_guide;
+  msg.votes = 3;
+  trans->send(msg);
+}
 
 bool Morphling::prepare_msgs() {
   if (m_next_msgs.size() == 0) {
@@ -163,6 +171,8 @@ bool Morphling::prepare_msgs() {
       msg.client_msg.from = m_me;
       msg.client_msg.epoch = m_guide.epoch;
       break;
+    default:
+      LOG_F(INFO, "why handle msg %d", msg.type);
     }
   }
 }
@@ -194,12 +204,14 @@ void Morphling::bcast_msgs(std::unordered_map<int, std::unique_ptr<Transport>> &
     case MsgTypeGuidance:
       trans->send(msg.guidance_msg);
       break;
+    default:
+      LOG_F(INFO, "no need to bcast type %d", msg.type);
     }
   }
   m_next_msgs.clear();
 }
 
-guidance_t& Morphling::get_guidance() {
+Guidance& Morphling::get_guidance() {
   return m_guide;
 }
 

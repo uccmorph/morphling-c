@@ -62,17 +62,17 @@ void receive(std::string str) {
 
 std::string send_guidance() {
   GuidanceMessage msg{
-    .guide = guidance_t{
+    .guide = Guidance{
       .epoch = 2,
       .status = 0x00000303,
       .cluster = {
-        node_status_t{
+        NodeStatus{
           .status = 0x00015500
         },
-        node_status_t{
+        NodeStatus{
           .status = 0x0001AA56
         },
-        node_status_t{
+        NodeStatus{
           .status = 0x01FFAB
         },
       }
@@ -94,7 +94,7 @@ void receive_guidance(std::string str) {
   GuidanceMessage msg;
   o.convert(msg);
 
-  guidance_t *g = &msg.guide;
+  Guidance *g = &msg.guide;
   debug_print_guidance(g);
 }
 
