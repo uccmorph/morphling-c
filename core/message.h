@@ -16,11 +16,17 @@ enum MessageType {
   MsgTypeAppend,
   MsgTypeAppendReply,
   MsgTypeClient,
+  MsgTypeClientReply,
   MsgTypeGuidance,
   MsgTypeGetGuidance,
 };
 
-struct AppendEntriesMessage {
+struct Message {
+  virtual std::unique_ptr<std::vector<uint8_t>> serialize();
+  virtual void deserialize(uint8_t *data, size_t size);
+};
+
+struct AppendEntriesMessage{
   int from;
   uint64_t epoch;
 
@@ -33,7 +39,7 @@ struct AppendEntriesMessage {
   MSGPACK_DEFINE(from, epoch, prev_term, prev_index, commit, group_id, entries);
 };
 
-struct AppenEntriesReplyMessage {
+struct AppenEntriesReplyMessage{
   int from;
   uint64_t epoch;
 
@@ -52,28 +58,33 @@ struct Operation {
   MSGPACK_DEFINE(op_type, key_hash, data);
 };
 
-struct ClientMessage {
-  int from;
+struct ClientMessage{
   // Guidance guidance;
   uint64_t epoch;
   uint64_t key_hash;
   // size_t data_size;
   std::vector<uint8_t> op;
 
-  MSGPACK_DEFINE(from, epoch, key_hash, op);
+
+  MSGPACK_DEFINE(epoch, key_hash, op);
 };
 
-struct GuidanceMessage {
+struct ClientReplyMessage{
+    int from;
+    bool success;
+    Guidance guidance;
+    uint64_t key_hash;
+    std::vector<uint8_t> reply_data;
+
+    MSGPACK_DEFINE(from, success, guidance, key_hash, reply_data);
+};
+
+struct GuidanceMessage{
   int from;
   Guidance guide;
   int votes;
 
   // MSGPACK_DEFINE(from, guide, votes);
-};
-
-struct InitMessage {
-  int from;
-  Guidance guide;
 };
 
 struct GenericMessage {

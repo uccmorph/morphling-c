@@ -16,7 +16,7 @@
 
 #include "morphling.h"
 #include "transport.h"
-#include "utils.cpp"
+#include "utils.h"
 
 class SocketTransport : public Transport {
   bufferevent *m_bev;
@@ -29,6 +29,7 @@ class SocketTransport : public Transport {
   void send(AppendEntriesMessage &msg);
   void send(AppenEntriesReplyMessage &msg);
   void send(ClientMessage &msg);
+  void send(ClientReplyMessage &msg);
   void send(GuidanceMessage &msg);
 };
 
@@ -66,6 +67,13 @@ void SocketTransport::send(AppenEntriesReplyMessage &msg) {
                           stream.str().size());
 }
 void SocketTransport::send(ClientMessage &msg) {
+  std::stringstream stream;
+  msgpack::pack(stream, msg);
+
+  SocketTransport::__send(MsgTypeClient, (uint8_t *)stream.str().data(),
+                          stream.str().size());
+}
+void SocketTransport::send(ClientReplyMessage &msg) {
   std::stringstream stream;
   msgpack::pack(stream, msg);
 

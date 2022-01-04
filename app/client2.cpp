@@ -22,7 +22,7 @@
 #include "message.h"
 #include "smr.h"
 #include "morphling.h"
-#include "utils.cpp"
+#include "utils.h"
 
 // each thread runs 1 client, for simplicity
 int cfg_total_clients = 4;
@@ -150,15 +150,23 @@ class Client {
   uint8_t *m_data = nullptr;
   size_t m_data_size = 0;
   uint64_t m_leading_epoch = 0;
-  bool m_idle = false;
+  // bool m_idle = false;
+  // bool m_is_reading = false;
+  // bool m_is_writing = false;
   int max_replica_id = 3;
   int quorum = 0;
   int send_msg_nums = 0;
   int recv_msg_nums = 0;
   bool finish_all_msg = false;
 
- private:
-
+ public:
+  enum status_t {
+    init,
+    reading,
+    writing,
+    idle,
+  };
+  status_t status = status_t::init;
 
  public:
   Client(event_base *base) : m_ev_base(base) {
@@ -178,7 +186,8 @@ class Client {
     m_data_size = size;
   }
   bool can_send() {
-    if (g_sent_nums++ <= cfg_msg_nums) {
+    // atomic increment
+    if (++g_sent_nums <= cfg_msg_nums) {
       send_msg_nums += 1;
       return true;
     }
@@ -195,7 +204,7 @@ class Client {
     LOG_F(INFO, "set new guidance of replica: %d", id);
     // m_guidace = guide;
     m_one_turn_collection[id] = guide;
-    debug_print_guidance(&m_one_turn_collection[id]);
+    // debug_print_guidance(&m_one_turn_collection[id]);
   }
   bool check_guidance_quorum() {
     std::map<uint64_t, int> epoch_votes;
@@ -219,7 +228,6 @@ class Client {
     }
 
     if ((*vote).second >= quorum) {
-      m_idle = true;
       for (auto &guide : m_one_turn_collection) {
         if (guide.epoch == (*vote).first) {
           m_guidace = guide;
@@ -233,6 +241,8 @@ class Client {
     m_one_turn_collection.clear();
     m_one_turn_collection.resize(max_replica_id);
     m_leading_epoch = 0;
+    // m_is_reading = false;
+    // m_is_writing = false;
   }
   void set_leading_epoch(uint64_t epoch) {
     m_leading_epoch = epoch;
@@ -240,13 +250,26 @@ class Client {
   uint64_t get_leading_epoch() {
     return m_leading_epoch;
   }
-  bool is_idle() {
-    return m_idle;
+  Guidance& peek_local_guidance() {
+    return m_guidace;
   }
+  // bool is_idle() {
+  //   // return !m_is_reading && !m_is_writing;
+  //   return status == status_t::idle;
+  // }
+  // bool is_reading() {
+  //   return status == sta;
+  // }
+  // void finish_reading() {
+
+  // }
+  // bool is_writing() {
+  //   return m_is_writing;
+  // }
 
 
   void build_comm();
-  void get_guidance(int id);
+  void request_guidance(int id);
   void one_send();
   void finish_event();
 
@@ -287,15 +310,15 @@ void Connection::send(uint8_t *buf, size_t size) {
 
 
 void Client::one_send() {
-  if (!m_idle) {
+  // if (!is_idle()) {
+  if (status != status_t::idle) {
     LOG_F(ERROR, "this client has a outstanding request, can not send more");
     return;
   }
   if (!can_send()) {
-    LOG_F(INFO, "all message has sent, can not send more");
+    LOG_F(WARNING, "all message has sent, can not send more");
     return;
   }
-  m_idle = false;
   uint8_t buf[2048];
 
 #if 1
@@ -319,23 +342,27 @@ void Client::one_send() {
     LOG_F(FATAL, "don't have replicable node for key 0x%x, pos: 0x%x",
           msg.key_hash, calc_key_pos(msg.key_hash));
   }
-  LOG_F(INFO, "send operation to replica %d, size: %zu", rid, total_size);
-  for (size_t i = 0; i < total_size; i++) {
-    printf("0x%x ", buf[i]);
-  }
-  printf("\n");
+  LOG_F(INFO, "send operation %d to replica %d, size: %zu", op.op_type, rid, total_size);
+
   m_conns[rid].send(buf, total_size);
 #endif
 
-  for (int id = 0; id < max_replica_id; id++) {
-    if (id == rid) {
-      continue;
+  if (op.op_type == 0) {
+    // m_is_reading = true;
+    status = status_t::reading;
+    for (int id = 0; id < max_replica_id; id++) {
+      if (id == rid) {
+        continue;
+      }
+      request_guidance(id);
     }
-    get_guidance(id);
+  } else {
+    // m_is_writing = true;
+    status = status_t::writing;
   }
 }
 
-void Client::get_guidance(int id) {
+void Client::request_guidance(int id) {
   LOG_F(INFO, "send get_guidance to replica %d", id);
   uint8_t buf[64];
   size_t msg_size;
@@ -363,7 +390,7 @@ void on_connection_event(struct bufferevent *bev, short what, void *arg) {
   Connection *conn = (Connection *)arg;
   if (what & BEV_EVENT_CONNECTED) {
     LOG_F(INFO, "connect to %d finish", conn->get_replica_id());
-    conn->client->get_guidance(conn->get_replica_id());
+    conn->client->request_guidance(conn->get_replica_id());
   } else {
     LOG_F(INFO, "conn %d, unexpected event: 0x%x", conn->get_replica_id(), what);
     if (what & BEV_EVENT_ERROR || what & BEV_EVENT_EOF) {
@@ -384,15 +411,30 @@ void handle_reply(struct bufferevent *bev, void *arg) {
     LOG_F(INFO, "receive new MsgTypeGuidance");
     GuidanceMessage *msg = (GuidanceMessage *)buf;
     conn->client->set_guidance(conn->get_replica_id(), msg->guide);
+    if (conn->client->status == Client::status_t::reading) {
+      if (conn->client->check_guidance_quorum()) {
+        conn->client->reset_turn_collection();
+        conn->client->status = Client::status_t::idle;
+      }
+    }
   } else if (type == MsgTypeClient) {
     LOG_F(INFO, "receive new MsgTypeClient");
-    ClientMessage msg;
+    ClientReplyMessage msg;
     auto oh = msgpack::unpack((char *)buf, msg_size);
     oh.get().convert(msg);
-    Guidance leading_guide;
-    leading_guide.epoch = msg.epoch;
-    conn->client->set_leading_epoch(msg.epoch);
-    conn->client->set_guidance(conn->get_replica_id(), leading_guide);
+
+    if (conn->client->status == Client::status_t::reading) {
+      conn->client->set_leading_epoch(msg.guidance.epoch);
+      conn->client->set_guidance(conn->get_replica_id(), msg.guidance);
+      if (conn->client->check_guidance_quorum()) {
+        conn->client->reset_turn_collection();
+        conn->client->status = Client::status_t::idle;
+      }
+    } else {
+      conn->client->reset_turn_collection();
+      conn->client->status = Client::status_t::idle;
+    }
+    LOG_F(INFO, "MsgTypeClient success: %d, data size: %zu", msg.success, msg.reply_data.size());
   } else {
     LOG_F(ERROR, "type: %d not a client message", type);
   }
@@ -416,11 +458,9 @@ void send_new_msg(struct bufferevent *bev, void *arg) {
 
 /* --------------- multi-thread --------------- */
 
-void send_on_ready(Client &ready_client) { ready_client.one_send(); }
-
 Client* one_ready_client(std::vector<Client> &clients) {
   for (auto &c : clients) {
-    if (c.is_idle()) {
+    if (c.status == Client::status_t::idle) {
       return &c;
     }
   }
@@ -431,18 +471,22 @@ bool check_setup(std::vector<Client> &clients) {
   for (auto &c : clients) {
     if (!c.check_guidance_quorum()) {
       return false;
+    } else {
+      LOG_F(INFO, "client use guidance:");
+      debug_print_guidance(&c.peek_local_guidance());
+      c.status = Client::status_t::idle;
     }
   }
   LOG_F(INFO, "all clients finish setup");
   return true;
 }
 
-
-
 struct finish_ctx {
   int count = 0;
   event_base *base;
 };
+
+
 
 void thread_run() {
   event_base *base = event_base_new();
@@ -470,9 +514,10 @@ void thread_run() {
   }
 
 
+
 #if 1
   while (true) {
-    auto res = event_base_loop(base, EVLOOP_NONBLOCK);
+    auto res = event_base_loop(base, EVLOOP_ONCE);
     LOG_F(INFO, "finish one loop");
     if (res == -1) {
       LOG_F(ERROR, "exit event loop with error. code %d. %s", errno, std::strerror(errno));
@@ -489,9 +534,10 @@ void thread_run() {
     }
   }
 
+
+
   while (true) {
-    Client *ready_c = nullptr;
-    ready_c = one_ready_client(clients);
+    Client *ready_c = one_ready_client(clients);
     if (ready_c == nullptr) {
       LOG_F(FATAL, "current not support null client");
     }
@@ -499,6 +545,19 @@ void thread_run() {
     if (ready_c != nullptr) {
       ready_c->one_send();
     }
+
+    // auto res = event_base_loop(base, EVLOOP_NONBLOCK);
+    // LOG_F(INFO, "finish one loop");
+    // if (res == -1) {
+    //   LOG_F(ERROR, "exit event loop with error. code %d. %s", errno,
+    //         std::strerror(errno));
+    //   break;
+    // }
+    // if (res == 1) {
+    //   LOG_F(WARNING, "exit event loop");
+    // }
+
+#if 1
     while (true) {
       auto res = event_base_loop(base, EVLOOP_NONBLOCK);
       LOG_F(INFO, "finish one loop");
@@ -512,18 +571,20 @@ void thread_run() {
       }
 
       if (ready_c != nullptr) {
-        auto get_q = ready_c->check_guidance_quorum();
-        if (get_q) {
+        if (ready_c->status == Client::status_t::idle) {
+          LOG_F(INFO, "client becomes idle");
           break;
         }
       }
     }
+#endif
 
     if (ready_c != nullptr && ready_c->has_finish_all()) {
       LOG_F(INFO, "all requests are finished");
       break;
     }
   }
+
 #endif
   event_base_free(base);
 }
@@ -538,12 +599,13 @@ int main(int argc, char **argv) {
   cfg_replica_port.emplace_back(9990);
   cfg_replica_port.emplace_back(9991);
   cfg_replica_port.emplace_back(9992);
-
+  Gauge gauge;
+  gauge.set_probe1();
   int thread_nums = cfg_total_clients / cfg_client_grouping;
   std::vector<std::thread> threads;
   threads.reserve(thread_nums);
   for (int i = 0; i < thread_nums; i++) {
-    threads.emplace_back(std::thread(
+    threads.emplace_back(
         [](int i) {
           std::string t_name("thread id");
           t_name += " " + std::to_string(i);
@@ -551,10 +613,12 @@ int main(int argc, char **argv) {
           ERROR_CONTEXT("parent context", loguru::get_thread_ec_handle());
           thread_run();
         },
-        i));
+        i);
   }
 
   for (auto &t : threads) {
     t.join();
   }
+  gauge.set_probe2();
+  gauge.total_time_ms();
 }

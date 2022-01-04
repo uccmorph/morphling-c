@@ -28,7 +28,9 @@ struct NodeStatus {
     0x0000FF00 for end_key_pos
     0x00FF0000 for alive and other flags
   */
-  uint32_t status;
+  uint32_t status = 0;
+  MSGPACK_DEFINE(status);
+
   uint8_t get_start_pos() {
     return status & node_status_mask_start;
   }
@@ -73,12 +75,12 @@ struct NodeStatus {
 };
 
 struct Guidance {
-  uint64_t epoch;
+  uint64_t epoch = 0;
   // uint8_t alive_num;
   // uint8_t cluster_size;
-  uint32_t status; // 0x0000FF00 for cluster_size, 0x000000FF for alive_num
+  uint32_t status = 0; // 0x0000FF00 for cluster_size, 0x000000FF for alive_num
   NodeStatus cluster[HARD_CODE_REPLICAS];
-  // MSGPACK_DEFINE(epoch, status, cluster);
+  MSGPACK_DEFINE(epoch, status, cluster);
   uint8_t get_cluster_size() {
     return (status & 0xFF00) >> 8;
   }

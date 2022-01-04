@@ -1,10 +1,6 @@
-#include <cstdint>
-#include <string>
-#include <vector>
 
-#include <event2/buffer.h>
-#include <event2/bufferevent.h>
-#include <event2/event.h>
+
+#include "utils.h"
 
 void parse_addr(const char *cmd_arg, std::vector<std::string> &peers_addr) {
   std::string arg(cmd_arg);
@@ -83,8 +79,8 @@ MessageType recv_msg(struct bufferevent *bev, uint8_t *buf, size_t &size) {
   LOG_F(5, "msg type: %d", msg_type);
 
   if (msg_type != MsgTypeAppend && msg_type != MsgTypeAppendReply &&
-      msg_type != MsgTypeClient && msg_type != MsgTypeGuidance &&
-      msg_type != MsgTypeGetGuidance) {
+      msg_type != MsgTypeClient && msg_type != MsgTypeClientReply &&
+      msg_type != MsgTypeGuidance && msg_type != MsgTypeGetGuidance) {
     return MsgTypeUnknown;
   }
 
@@ -93,3 +89,4 @@ MessageType recv_msg(struct bufferevent *bev, uint8_t *buf, size_t &size) {
 
   return msg_type;
 }
+

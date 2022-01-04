@@ -24,6 +24,9 @@ class Morphling {
 
   Transport *m_network;
 
+  // simple memory storage
+  std::unordered_map<uint64_t, std::vector<uint8_t>> m_storage;
+
  private:
   void init_local_guidance(int key_space = DEFAULT_KEY_SPACE);
   bool is_valid_guidance(uint64_t epoch);

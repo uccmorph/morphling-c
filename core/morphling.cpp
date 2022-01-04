@@ -9,6 +9,7 @@ int calc_key_pos(uint64_t key_hash) {
 Morphling::Morphling(int id, std::vector<int> &peers)
     : m_me(id), m_peers(peers) {
   Morphling::init_local_guidance();
+  m_storage.reserve(1000);
   SMRMessageCallback cb{
       .notify_send_append_entry = [this](GenericMessage &&msg) -> bool {
         this->m_next_msgs.push_back(msg);
@@ -24,6 +25,8 @@ Morphling::Morphling(int id, std::vector<int> &peers)
         }
         return true;
       }};
+  // alloc enough space, so m_smrs won't automatically grow, and won't use move constructor
+  m_smrs.reserve(DEFAULT_KEY_SPACE);
   for (int i = 0; i < DEFAULT_KEY_SPACE; i++) {
     // SMR smr(id, m_peers);
     auto &smr = m_smrs.emplace_back(id, m_peers);
@@ -105,12 +108,13 @@ void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> 
 
   auto op = parse_operation(msg.op);
   if (op.get()->op_type == 0) {
-    // send echo msg
-    std::string echo_str("hello world!");
-    ClientMessage reply;
-    reply.epoch = m_guide.epoch;
+    ClientReplyMessage reply;
+    reply.success = true;
+    reply.guidance = m_guide;
     reply.from = m_me;
     reply.key_hash = msg.key_hash;
+    reply.reply_data = m_storage[msg.key_hash];
+    LOG_F(3, "reply client read, data size: %zu", reply.reply_data.size());
 
     trans->send(reply);
     return;
@@ -172,21 +176,29 @@ bool Morphling::prepare_msgs() {
       msg.append_reply_msg.from = m_me;
       msg.append_reply_msg.epoch = m_guide.epoch;
       break;
-    case MsgTypeClient:
-      msg.client_msg.from = m_me;
-      msg.client_msg.epoch = m_guide.epoch;
-      break;
     default:
       LOG_F(INFO, "why handle msg %d", msg.type);
     }
   }
+  return true;
 }
 
 bool Morphling::maybe_apply() {
   for (auto &e : m_apply_entries) {
-    LOG_F(3, "apply entry: %s", e.debug().c_str());
-    std::string echo_str("hello world!");
-    m_client_pendings[e.index]->send((uint8_t *)echo_str.c_str(), echo_str.size());
+    auto op = parse_operation(e.data);
+    LOG_F(3, "apply entry: %s, op: %d, key: 0x%8x", e.debug().c_str(), op->op_type, op->key_hash);
+    ClientReplyMessage reply;
+    reply.success = true;
+    reply.guidance = m_guide;
+    reply.from = m_me;
+    reply.key_hash = op->key_hash;
+    if (op->op_type == 1) {
+      m_storage[op->key_hash] = op->data;
+    } else {
+      reply.reply_data = m_storage[op->key_hash];
+    }
+
+    m_client_pendings[e.index]->send(reply);
   }
   m_apply_entries.clear();
 }

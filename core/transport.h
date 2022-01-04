@@ -19,6 +19,7 @@ public:
   virtual void send(AppendEntriesMessage &msg) = 0;
   virtual void send(AppenEntriesReplyMessage &msg) = 0;
   virtual void send(ClientMessage &msg) = 0;
+  virtual void send(ClientReplyMessage &msg) = 0;
   virtual void send(GuidanceMessage &msg) = 0;
 };
 
