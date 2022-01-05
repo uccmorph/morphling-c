@@ -13,6 +13,8 @@
 struct client_ctx_st {
   struct event_base* base;
   int shutting;
+  char *reply;
+  size_t reply_size;
 };
 
 int set_linger(int fd, int onoff, int linger) {
@@ -51,8 +53,12 @@ void read_cb(struct bufferevent* bev, void* ctx) {
   size_t n = bufferevent_read(bev, tmp, 1024);
   printf("read %zu bytes\n", n);
 
-  int res = bufferevent_write(bev, tmp, n);
+  char *reply = new char[1000];
+
+  int res = bufferevent_write(bev, reply, 1000);
   printf("write res = %d\n", res);
+
+  delete [] reply;
 
 
 
@@ -109,6 +115,11 @@ void listener_cb(struct evconnlistener* l, evutil_socket_t nfd,
   struct client_ctx_st* client_ctx = (struct client_ctx_st*)malloc(sizeof(struct client_ctx_st));
   client_ctx->base = base;
   client_ctx->shutting = 0;
+  client_ctx->reply = new char[1000];
+  for (int i = 0; i < 1000; i++) {
+    client_ctx->reply[i] = 'a';
+  }
+  client_ctx->reply_size = 1000;
 
   bufferevent_setcb(bev, read_cb, nullptr, event_cb, client_ctx);
   bufferevent_enable(bev, EV_READ | EV_WRITE | EV_PERSIST);

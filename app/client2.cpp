@@ -31,15 +31,19 @@ std::vector<std::string> cfg_replica_addr;
 std::vector<int> cfg_replica_port;
 bool cfg_is_read = false;
 int cfg_msg_nums = 5;
+bool cfg_unreplicated_read = false;
 
 int cfg_value_size = 100;
 static uint8_t *g_value;
 
 std::atomic_int g_sent_nums(0);
 
+std::vector<Gauge> g_latency_gauge;
+
 void on_connection_event(struct bufferevent *bev, short what, void *arg);
 void handle_reply(struct bufferevent *bev, void *ctx);
 void send_new_msg(struct bufferevent *bev, void *ctx);
+void handle_ur_reply(struct bufferevent *bev, void *arg);
 
 bool parse_cmd(int argc, char **argv) {
   int has_default = 0;
@@ -50,6 +54,7 @@ bool parse_cmd(int argc, char **argv) {
       {"ro", no_argument, &has_default, 0},
       {"vs", required_argument, nullptr, 0},
       {"nums", required_argument, nullptr, 0},
+      {"ur", no_argument, &has_default, 0},
       {0, 0, 0, 0}};
 
   int c = 0;
@@ -85,6 +90,10 @@ bool parse_cmd(int argc, char **argv) {
 
           case 5:
             cfg_msg_nums = std::stoi(optarg);
+            break;
+
+          case 6:
+            cfg_unreplicated_read = true;
             break;
         }
 
@@ -139,17 +148,16 @@ class Connection {
 };
 
 class Client {
-  int guide_vote = 0;
-  int m_task_nums = 10;
+  int m_id = 0;
   std::vector<Connection> m_conns;
   event_base *m_ev_base;
   event *m_ev_finish = nullptr;
-  Guidance m_guidace;
+  Guidance m_leading_guidance;
   std::vector<Guidance> m_one_turn_collection;
 
   uint8_t *m_data = nullptr;
   size_t m_data_size = 0;
-  uint64_t m_leading_epoch = 0;
+  // uint64_t m_leading_epoch = 0;
   // bool m_idle = false;
   // bool m_is_reading = false;
   // bool m_is_writing = false;
@@ -163,10 +171,12 @@ class Client {
   enum status_t {
     init,
     reading,
+    waiting_guidance,
     writing,
     idle,
   };
   status_t status = status_t::init;
+  Gauge *gauge;
 
  public:
   Client(event_base *base) : m_ev_base(base) {
@@ -180,6 +190,12 @@ class Client {
     }
 
     m_one_turn_collection.resize(max_replica_id);
+  }
+  void set_id(int id) {
+    m_id = id;
+  }
+  int get_id() {
+    return m_id;
   }
   void set_data(uint8_t *d, size_t size) {
     m_data = d;
@@ -207,6 +223,10 @@ class Client {
     // debug_print_guidance(&m_one_turn_collection[id]);
   }
   bool check_guidance_quorum() {
+    if (m_leading_guidance.epoch == 0) {
+      LOG_F(WARNING, "client %d doesn't have leading guidance", m_id);
+      return false;
+    }
     std::map<uint64_t, int> epoch_votes;
     for (auto &guide : m_one_turn_collection) {
       epoch_votes[guide.epoch] += 1;
@@ -217,63 +237,77 @@ class Client {
     if ((*vote).first == 0) {
       return false;
     }
-    if (m_leading_epoch != 0 && m_leading_epoch < (*vote).first) {
+    if (m_leading_guidance.epoch < (*vote).first) {
       LOG_F(WARNING, "leading epoch %zu is smaller than other replica's %zu",
-            m_leading_epoch, (*vote).first);
+            m_leading_guidance.epoch, (*vote).first);
       return false;
     }
-    if (m_leading_epoch > (*vote).first) {
+    if (m_leading_guidance.epoch > (*vote).first) {
       LOG_F(WARNING, "other replicas not reply proper guidance");
       return false;
     }
 
     if ((*vote).second >= quorum) {
-      for (auto &guide : m_one_turn_collection) {
-        if (guide.epoch == (*vote).first) {
-          m_guidace = guide;
-        }
-      }
       return true;
     }
     return false;
   }
+  bool has_uniform_guidance() {
+    uint64_t fe = m_one_turn_collection[0].epoch;
+    if (fe == 0) {
+      return false;
+    }
+    for (auto &guide : m_one_turn_collection) {
+      if (guide.epoch != fe) {
+        return false;
+      }
+    }
+    return true;
+  }
+  bool update_leading_guidance() {
+    uint64_t max = 0;
+    int max_idx = 0;
+    for (int i = 0; i < m_one_turn_collection.size(); i++) {
+      if (m_one_turn_collection[i].epoch > max) {
+        max = m_one_turn_collection[i].epoch;
+        max_idx = i;
+      }
+    }
+
+    int count = 0;
+    for (int i = 0; i < m_one_turn_collection.size(); i++) {
+      if (m_one_turn_collection[i].epoch == max) {
+        count += 1;
+      }
+    }
+    if (count >= quorum) {
+      m_leading_guidance = m_one_turn_collection[max_idx];
+      return true;
+    }
+    return false;
+  }
+
   void reset_turn_collection() {
     m_one_turn_collection.clear();
     m_one_turn_collection.resize(max_replica_id);
-    m_leading_epoch = 0;
-    // m_is_reading = false;
-    // m_is_writing = false;
+    // m_leading_epoch = 0;
   }
-  void set_leading_epoch(uint64_t epoch) {
-    m_leading_epoch = epoch;
-  }
-  uint64_t get_leading_epoch() {
-    return m_leading_epoch;
-  }
+  // void set_leading_epoch(uint64_t epoch) {
+  //   m_leading_epoch = epoch;
+  // }
+  // uint64_t get_leading_epoch() {
+  //   return m_leading_epoch;
+  // }
   Guidance& peek_local_guidance() {
-    return m_guidace;
+    return m_leading_guidance;
   }
-  // bool is_idle() {
-  //   // return !m_is_reading && !m_is_writing;
-  //   return status == status_t::idle;
-  // }
-  // bool is_reading() {
-  //   return status == sta;
-  // }
-  // void finish_reading() {
-
-  // }
-  // bool is_writing() {
-  //   return m_is_writing;
-  // }
-
 
   void build_comm();
   void request_guidance(int id);
   void one_send();
   void finish_event();
-
-
+  void handle_reply(Connection *conn);
+  void handle_ur_reply(Connection *conn, int type, uint8_t *msg_buf, size_t msg_size);
 };
 
 /* --------------- Connection --------------- */
@@ -291,8 +325,12 @@ int Connection::connect() {
   m_sock_bev = sock_bev;
   bufferevent_socket_connect(sock_bev, (struct sockaddr *)&sin, sizeof(sin));
 
-  bufferevent_setcb(sock_bev, handle_reply, nullptr, on_connection_event, this);
-  bufferevent_enable(sock_bev, EV_READ | EV_ET | EV_PERSIST);
+  if (cfg_unreplicated_read) {
+    bufferevent_setcb(sock_bev, handle_ur_reply, nullptr, on_connection_event, this);
+  } else {
+    bufferevent_setcb(sock_bev, handle_reply, nullptr, on_connection_event, this);
+  }
+  bufferevent_enable(sock_bev, EV_READ | EV_PERSIST);
 
   return 0;
 }
@@ -312,23 +350,26 @@ void Connection::send(uint8_t *buf, size_t size) {
 void Client::one_send() {
   // if (!is_idle()) {
   if (status != status_t::idle) {
-    LOG_F(ERROR, "this client has a outstanding request, can not send more");
+    LOG_F(ERROR, "client %d has a outstanding request, can not send more", m_id);
     return;
   }
   if (!can_send()) {
-    LOG_F(WARNING, "all message has sent, can not send more");
+    LOG_F(WARNING, "client %d all message has sent, can not send more", m_id);
     return;
   }
   uint8_t buf[2048];
+  gauge->set_probe1();
 
 #if 1
   Operation op{
       .op_type = cfg_is_read ? 0 : 1,
       .key_hash = 0x5499,
   };
-  op.data.resize(m_data_size);
-  LOG_F(INFO, "m_data at %p", m_data);
-  std::copy(m_data, m_data + m_data_size, op.data.begin());
+  if (op.op_type == 1) {
+    op.data.resize(m_data_size);
+    LOG_F(INFO, "m_data at %p", m_data);
+    std::copy(m_data, m_data + m_data_size, op.data.begin());
+  }
   ClientMessage msg{
       .epoch = 1,
       .key_hash = 0x5499,
@@ -337,28 +378,33 @@ void Client::one_send() {
   pack_operation(op, msg, buf, total_size);
 
   // send operation to replicable node
-  int rid = m_guidace.map_node_id(calc_key_pos(msg.key_hash));
+  int rid = m_leading_guidance.map_node_id(calc_key_pos(msg.key_hash));
   if (rid == -1) {
     LOG_F(FATAL, "don't have replicable node for key 0x%x, pos: 0x%x",
           msg.key_hash, calc_key_pos(msg.key_hash));
   }
-  LOG_F(INFO, "send operation %d to replica %d, size: %zu", op.op_type, rid, total_size);
+  LOG_F(INFO, "client %d send operation %d to replica %d, size: %zu", m_id,
+        op.op_type, rid, total_size);
 
   m_conns[rid].send(buf, total_size);
 #endif
 
-  if (op.op_type == 0) {
-    // m_is_reading = true;
+  if (cfg_unreplicated_read) {
     status = status_t::reading;
-    for (int id = 0; id < max_replica_id; id++) {
-      if (id == rid) {
-        continue;
-      }
-      request_guidance(id);
-    }
   } else {
-    // m_is_writing = true;
-    status = status_t::writing;
+    if (op.op_type == 0) {
+      // m_is_reading = true;
+      status = status_t::reading;
+      for (int id = 0; id < max_replica_id; id++) {
+        if (id == rid) {
+          continue;
+        }
+        request_guidance(id);
+      }
+    } else {
+      // m_is_writing = true;
+      status = status_t::writing;
+    }
   }
 }
 
@@ -384,6 +430,31 @@ void Client::finish_event() {
   event_active(m_ev_finish, EV_WRITE, 0);
 }
 
+void Client::handle_ur_reply(Connection *conn, int type, uint8_t *msg_buf,
+                             size_t msg_size) {
+  if (type == MsgTypeGuidance) {
+    GuidanceMessage *msg = (GuidanceMessage *)msg_buf;
+    set_guidance(conn->get_replica_id(), msg->guide);
+  } else if (type == MsgTypeClientReply) {
+    LOG_F(INFO,
+          "===== client %d status %d receive new MsgTypeClientReply =====",
+          m_id, status);
+    ClientReplyMessage msg;
+    auto oh = msgpack::unpack((char *)msg_buf, msg_size);
+    oh.get().convert(msg);
+
+    if (status == Client::status_t::reading) {
+      status = Client::status_t::idle;
+    } else if (status == Client::status_t::writing) {
+      LOG_F(ERROR, "unreplicated read won't have writing");
+    }
+    LOG_F(INFO, "status: %d, success: %d, data size: %zu", status, msg.success,
+          msg.reply_data.size());
+  } else {
+    LOG_F(ERROR, "type: %d not a client message", type);
+  }
+}
+
 /* --------------- libevent callback --------------- */
 
 void on_connection_event(struct bufferevent *bev, short what, void *arg) {
@@ -406,39 +477,51 @@ void handle_reply(struct bufferevent *bev, void *arg) {
   uint8_t buf[2048];
   size_t msg_size;
   auto type = recv_msg(bev, buf, msg_size);
+  int id = conn->client->get_id();
 
   if (type == MsgTypeGuidance) {
-    LOG_F(INFO, "receive new MsgTypeGuidance");
+    LOG_F(INFO, "===== client %d status %d receive new MsgTypeGuidance =====", id, conn->client->status);
     GuidanceMessage *msg = (GuidanceMessage *)buf;
     conn->client->set_guidance(conn->get_replica_id(), msg->guide);
-    if (conn->client->status == Client::status_t::reading) {
+    if (conn->client->status == Client::status_t::waiting_guidance) {
       if (conn->client->check_guidance_quorum()) {
         conn->client->reset_turn_collection();
         conn->client->status = Client::status_t::idle;
       }
     }
-  } else if (type == MsgTypeClient) {
-    LOG_F(INFO, "receive new MsgTypeClient");
+  } else if (type == MsgTypeClientReply) {
+    LOG_F(INFO, "===== client %d status %d receive new MsgTypeClientReply =====", id, conn->client->status);
     ClientReplyMessage msg;
     auto oh = msgpack::unpack((char *)buf, msg_size);
     oh.get().convert(msg);
 
     if (conn->client->status == Client::status_t::reading) {
-      conn->client->set_leading_epoch(msg.guidance.epoch);
       conn->client->set_guidance(conn->get_replica_id(), msg.guidance);
       if (conn->client->check_guidance_quorum()) {
         conn->client->reset_turn_collection();
         conn->client->status = Client::status_t::idle;
+      } else {
+        conn->client->status = Client::status_t::waiting_guidance;
       }
-    } else {
+    } else if (conn->client->status == Client::status_t::writing) {
       conn->client->reset_turn_collection();
       conn->client->status = Client::status_t::idle;
+      conn->client->gauge->set_probe2();
+      conn->client->gauge->instant_time_us();
     }
-    LOG_F(INFO, "MsgTypeClient success: %d, data size: %zu", msg.success, msg.reply_data.size());
+    LOG_F(INFO, "status: %d, success: %d, data size: %zu", conn->client->status, msg.success, msg.reply_data.size());
   } else {
     LOG_F(ERROR, "type: %d not a client message", type);
   }
+}
 
+void handle_ur_reply(struct bufferevent *bev, void *arg) {
+  Connection *conn = (Connection *)arg;
+  uint8_t buf[2048];
+  size_t msg_size;
+  auto type = recv_msg(bev, buf, msg_size);
+
+  conn->client->handle_ur_reply(conn, type, buf, msg_size);
 }
 
 #if 0
@@ -469,11 +552,14 @@ Client* one_ready_client(std::vector<Client> &clients) {
 
 bool check_setup(std::vector<Client> &clients) {
   for (auto &c : clients) {
-    if (!c.check_guidance_quorum()) {
+    if (!c.has_uniform_guidance()) {
       return false;
     } else {
-      LOG_F(INFO, "client use guidance:");
-      debug_print_guidance(&c.peek_local_guidance());
+      if (!c.update_leading_guidance()) {
+        LOG_F(FATAL, "client %d update leading guidance fail", c.get_id());
+      }
+      // LOG_F(INFO, "client use guidance:");
+      // debug_print_guidance(&c.peek_local_guidance());
       c.status = Client::status_t::idle;
     }
   }
@@ -488,7 +574,7 @@ struct finish_ctx {
 
 
 
-void thread_run() {
+void thread_run(int tid) {
   event_base *base = event_base_new();
   finish_ctx fctx;
   fctx.base = base;
@@ -508,14 +594,14 @@ void thread_run() {
   clients.reserve(cfg_client_grouping);
   for (int i = 0; i < cfg_client_grouping; i++) {
     Client &c = clients.emplace_back(base);
+    c.set_id(i);
     c.set_data(g_value, cfg_value_size);
     c.set_finish_event(finish_ev);
+    c.gauge = &g_latency_gauge[tid * cfg_client_grouping + i];
+    c.gauge->set_disable(true);
     c.build_comm();
   }
 
-
-
-#if 1
   while (true) {
     auto res = event_base_loop(base, EVLOOP_ONCE);
     LOG_F(INFO, "finish one loop");
@@ -534,30 +620,45 @@ void thread_run() {
     }
   }
 
-
-
   while (true) {
     Client *ready_c = one_ready_client(clients);
     if (ready_c == nullptr) {
-      LOG_F(FATAL, "current not support null client");
+      LOG_F(WARNING, "no client is idle");
     }
 
     if (ready_c != nullptr) {
       ready_c->one_send();
     }
 
-    // auto res = event_base_loop(base, EVLOOP_NONBLOCK);
-    // LOG_F(INFO, "finish one loop");
-    // if (res == -1) {
-    //   LOG_F(ERROR, "exit event loop with error. code %d. %s", errno,
-    //         std::strerror(errno));
-    //   break;
-    // }
-    // if (res == 1) {
-    //   LOG_F(WARNING, "exit event loop");
-    // }
-
 #if 1
+    // todo: break the loop only when all clients receive reply
+    if (ready_c != nullptr && ready_c->has_finish_all()) {
+      bool all_idle = true;
+      for (auto &c : clients) {
+        if (c.status != Client::status_t::idle) {
+          all_idle = false;
+          break;
+        }
+      }
+      if (all_idle) {
+        LOG_F(INFO, "all requests are finished");
+        break;
+      }
+    }
+    auto res = event_base_loop(base, EVLOOP_ONCE);
+    LOG_F(INFO, "finish one loop");
+    if (res == -1) {
+      LOG_F(ERROR, "exit event loop with error. code %d. %s", errno,
+            std::strerror(errno));
+      break;
+    }
+    if (res == 1) {
+      LOG_F(WARNING, "exit event loop");
+      break;
+    }
+#endif
+
+#if 0
     while (true) {
       auto res = event_base_loop(base, EVLOOP_NONBLOCK);
       LOG_F(INFO, "finish one loop");
@@ -577,15 +678,14 @@ void thread_run() {
         }
       }
     }
-#endif
 
     if (ready_c != nullptr && ready_c->has_finish_all()) {
       LOG_F(INFO, "all requests are finished");
       break;
     }
+#endif
   }
 
-#endif
   event_base_free(base);
 }
 
@@ -600,18 +700,19 @@ int main(int argc, char **argv) {
   cfg_replica_port.emplace_back(9991);
   cfg_replica_port.emplace_back(9992);
   Gauge gauge;
+  g_latency_gauge.resize(cfg_total_clients);
   gauge.set_probe1();
   int thread_nums = cfg_total_clients / cfg_client_grouping;
   std::vector<std::thread> threads;
   threads.reserve(thread_nums);
   for (int i = 0; i < thread_nums; i++) {
     threads.emplace_back(
-        [](int i) {
+        [](int tid) {
           std::string t_name("thread id");
-          t_name += " " + std::to_string(i);
+          t_name += " " + std::to_string(tid);
           loguru::set_thread_name(t_name.c_str());
           ERROR_CONTEXT("parent context", loguru::get_thread_ec_handle());
-          thread_run();
+          thread_run(tid);
         },
         i);
   }
@@ -620,5 +721,9 @@ int main(int argc, char **argv) {
     t.join();
   }
   gauge.set_probe2();
-  gauge.total_time_ms();
+  gauge.total_time_ms(cfg_msg_nums);
+  // for (int i = 0; i < cfg_total_clients; i++) {
+  //   printf("latency client %d\n", i);
+  //   g_latency_gauge[i].index_time_us();
+  // }
 }

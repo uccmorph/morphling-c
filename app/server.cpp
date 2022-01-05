@@ -18,6 +18,8 @@
 #include "transport.h"
 #include "utils.h"
 
+Gauge g_gauge;
+
 class SocketTransport : public Transport {
   bufferevent *m_bev;
   void __send(MessageType type, uint8_t *payload, uint64_t payload_size);
@@ -77,7 +79,10 @@ void SocketTransport::send(ClientReplyMessage &msg) {
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
-  SocketTransport::__send(MsgTypeClient, (uint8_t *)stream.str().data(),
+  auto probe_idx = g_gauge.set_probe2();
+  g_gauge.instant_time_us(probe_idx);
+
+  SocketTransport::__send(MsgTypeClientReply, (uint8_t *)stream.str().data(),
                           stream.str().size());
 }
 void SocketTransport::send(GuidanceMessage &msg) {
@@ -232,6 +237,7 @@ void client_msg_cb(struct bufferevent *bev, void *ctx) {
   auto type = recv_msg(bev, tmp, msg_size);
 
   if (type == MsgTypeClient) {
+    g_gauge.set_probe1();
     ClientMessage msg;
     std::unique_ptr<Transport> trans = std::make_unique<SocketTransport>(bev);
     auto oh = msgpack::unpack((char *)tmp, msg_size);
@@ -412,11 +418,12 @@ void Server::recv_init_msg(bufferevent *bev) {
   GuidanceMessage *msg = (GuidanceMessage *)tmp;
   LOG_F(INFO, "receive guidance msg from %d", msg->from);
   debug_print_guidance(&msg->guide);
-  LOG_F(INFO, "peer ctx old socket_bev: %p, need to change",
+  LOG_F(INFO, "peer ctx old socket_bev: %p, maybe need change",
         m_peer_ctx[msg->from].socket_bev);
 
   if (m_peer_ctx[msg->from].proactive_connected) {
     LOG_F(INFO, "peer %d has proactive connect, give up this connection", msg->from);
+    bufferevent_free(bev);
   } else {
     m_peer_ctx[msg->from].passive_connected = true;
     if (m_peer_ctx[msg->from].socket_bev != nullptr) {
@@ -425,7 +432,7 @@ void Server::recv_init_msg(bufferevent *bev) {
     m_peer_ctx[msg->from].socket_bev = bev;
     m_peer_trans[msg->from] = std::make_unique<SocketTransport>(bev);
     bufferevent_setcb(bev, peer_general_msg_cb, nullptr, event_cb, &m_peer_ctx[msg->from]);
-    bufferevent_enable(bev, EV_READ | EV_PERSIST | EV_ET);
+    bufferevent_enable(bev, EV_READ | EV_PERSIST);
   }
 }
 
@@ -461,7 +468,7 @@ bool Server::connect_peer(int id) {
   }
   bufferevent_setcb(peer.socket_bev, peer_general_msg_cb, nullptr,
                     connect_peer_event_cb, &peer);
-  bufferevent_enable(peer.socket_bev, EV_READ | EV_ET | EV_PERSIST);
+  bufferevent_enable(peer.socket_bev, EV_READ | EV_PERSIST);
 
   return true;
 }

@@ -25,6 +25,7 @@ MessageType recv_msg(struct bufferevent *bev, uint8_t *buf, size_t &size);
 class Gauge {
   std::vector<std::chrono::steady_clock::time_point> measure_probe1;
   std::vector<std::chrono::steady_clock::time_point> measure_probe2;
+  bool disable = false;
 
 public:
   Gauge() {
@@ -32,15 +33,30 @@ public:
     measure_probe2.reserve(1000000);
   }
 
-  void set_probe1() {
+  size_t set_probe1() {
+    if (disable) {
+      return 0;
+    }
     measure_probe1.emplace_back(std::chrono::steady_clock::now());
+    return measure_probe1.size() - 1;
   }
 
-  void set_probe2() {
+  size_t set_probe2() {
+    if (disable) {
+      return 0;
+    }
     measure_probe2.emplace_back(std::chrono::steady_clock::now());
+    return measure_probe2.size() - 1;
   }
 
-  void total_time_ms() {
+  void set_disable(bool b) {
+    disable = b;
+  }
+
+  void total_time_ms(int total_msg) {
+    if (disable) {
+      return;
+    }
     if (measure_probe1.size() == 0 || measure_probe2.size() == 0) {
       LOG_F(ERROR, "no metrics");
       return;
@@ -51,12 +67,16 @@ public:
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
             .count();
     res *= 1e-6;
-    printf("total time: %f ms\n", res);
+    printf("total time: %f ms, throughput: %f Kops\n", res, total_msg / res);
   }
 
   void index_time_us() {
+    if (disable) {
+      return;
+    }
     if (measure_probe1.size() != measure_probe2.size()) {
-      LOG_F(ERROR, "Two probe don't have same number of data");
+      LOG_F(ERROR, "Two probe don't have same number of data (%zu : %zu)",
+            measure_probe1.size(), measure_probe2.size());
       return;
     }
     for (size_t i = 0; i < measure_probe1.size(); i++) {
@@ -66,6 +86,38 @@ public:
       interval *= 1e-3;
       printf("loop %zu, interval: %f us\n", i, interval);
     }
+  }
+
+  void instant_time_us() {
+    if (disable) {
+      return;
+    }
+    if (measure_probe1.size() != measure_probe2.size()) {
+      LOG_F(ERROR, "Two probe don't have same number of data (%zu : %zu)",
+            measure_probe1.size(), measure_probe2.size());
+      return;
+    }
+    auto &start = *(measure_probe1.rbegin());
+    auto &end = *(measure_probe2.rbegin());
+    double res =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+            .count();
+    res *= 1e-3;
+    printf("loop %zu, interval: %f us\n", measure_probe1.size(), res);
+  }
+
+  void instant_time_us(size_t idx) {
+    if (disable) {
+      return;
+    }
+
+    auto &start = measure_probe1[idx];
+    auto &end = measure_probe2[idx];
+    double res =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+            .count();
+    res *= 1e-3;
+    printf("loop %zu, interval: %f us\n", idx, res);
   }
 };
 

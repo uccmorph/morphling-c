@@ -122,11 +122,8 @@ bool EntryVoteRecord::vote(int id, uint64_t index) {
   if (records_itr == m_records.end()) {
     // m_records.emplace(index, std::vector<bool>(m_peer_num, false));
     m_records[index] = std::vector<bool>(m_peer_num, false);
-    LOG_F(INFO, "new record, m_peer_num = %d", m_peer_num);
   }
   auto &entry_record = m_records.at(index);
-  LOG_F(INFO, "index = %zu, id = %d", index, id);
-  LOG_F(INFO, "entry_record size: %zu",entry_record.size());
   entry_record[id] = true;
 
   int agree_count = 0;
