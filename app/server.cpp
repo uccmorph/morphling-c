@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <string.h>
+#include <netinet/tcp.h>
 
 #include <chrono>
 #include <loguru.hpp>
@@ -18,7 +19,9 @@
 #include "transport.h"
 #include "utils.h"
 
-Gauge g_gauge;
+Gauge g_gauge("Client op");
+Gauge g_append_gauge("Append");
+Gauge g_handle_append_gauge("New entry");
 
 class SocketTransport : public Transport {
   bufferevent *m_bev;
@@ -58,6 +61,7 @@ void SocketTransport::send(AppendEntriesMessage &msg) {
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
+  g_append_gauge.set_probe1();
   SocketTransport::__send(MsgTypeAppend, (uint8_t *)stream.str().data(),
                           stream.str().size());
 }
@@ -65,8 +69,11 @@ void SocketTransport::send(AppenEntriesReplyMessage &msg) {
   std::stringstream stream;
   msgpack::pack(stream, msg);
 
+
   SocketTransport::__send(MsgTypeAppendReply, (uint8_t *)stream.str().data(),
                           stream.str().size());
+  auto probe_idx = g_handle_append_gauge.set_probe2();
+  g_handle_append_gauge.instant_time_us(probe_idx);
 }
 void SocketTransport::send(ClientMessage &msg) {
   std::stringstream stream;
@@ -145,91 +152,6 @@ void msg_unpck_msg(T &&target, uint8_t *buf, size_t size) {
   oh.get().convert(target);
 }
 
-#if 0
-void parse_and_feed_msg(struct bufferevent *bev, void *ctx) {
-  Server *server = (Server *)ctx;
-  // 2048 may be too small for large msg
-  char tmp[2048] = {0};
-  size_t rpc_header_size = 4;
-  // size_t n = bufferevent_read(bev, tmp, rpc_header_size);
-  // assert(n == rpc_header_size);
-  // server->m_measure_probe1.emplace_back(std::chrono::steady_clock::now());
-  std::chrono::steady_clock::time_point probe1 =
-      std::chrono::steady_clock::now();
-  full_read(bev, (uint8_t *)tmp, rpc_header_size);
-  uint32_t payload_size = 0;
-  for (int i = 0; i < (int)rpc_header_size - 1; i++) {
-    payload_size = payload_size | ((tmp[i] & 0x000000FF) << (i * 8));
-    LOG_F(3, "tmp %d: 0x%x", i, tmp[i]);
-  }
-  MessageType msg_type = (MessageType)(tmp[3] & 0x000000FF);
-
-  LOG_F(3, "payload size: %u", payload_size);
-  LOG_F(3, "msg type: %d", msg_type);
-
-  if (msg_type != MsgTypeAppend && msg_type != MsgTypeAppendReply &&
-      msg_type != MsgTypeClient && msg_type != MsgTypeGuidance) {
-    LOG_F(3, "reply with 404-like message");
-    std::unique_ptr<Transport> trans = std::make_unique<SocketTransport>(bev);
-    std::stringstream error_msg;
-    error_msg << "error: don't have handler for " << msg_type << "\n";
-    drain_read(bev, (uint8_t *)tmp, 2048);
-    trans->send((uint8_t *)error_msg.str().c_str(), error_msg.str().size());
-    return;
-  }
-
-  full_read(bev, (uint8_t *)tmp, payload_size);
-  // server->m_measure_probe2.emplace_back(std::chrono::steady_clock::now());
-  std::chrono::steady_clock::time_point probe2 =
-      std::chrono::steady_clock::now();
-
-  if (msg_type == MsgTypeAppend) {
-    AppendEntriesMessage msg;
-    auto oh = msgpack::unpack(tmp, payload_size);
-    oh.get().convert(msg);
-    server->replica.handle_append_entries(msg, msg.from);
-
-  } else if (msg_type == MsgTypeAppendReply) {
-    AppenEntriesReplyMessage msg;
-    auto oh = msgpack::unpack(tmp, payload_size);
-    oh.get().convert(msg);
-    server->replica.handle_append_entries_reply(msg, msg.from);
-    server->replica.maybe_apply();
-
-  } else if (msg_type == MsgTypeClient) {
-    ClientMessage msg;
-    std::unique_ptr<Transport> trans = std::make_unique<SocketTransport>(bev);
-    auto oh = msgpack::unpack(tmp, payload_size);
-    oh.get().convert(msg);
-    server->replica.handle_operation(msg, std::move(trans));
-
-  } else if (msg_type == MsgTypeGuidance) {
-    // GuidanceMessage msg;
-    // auto oh = msgpack::unpack(tmp, payload_size);
-    // oh.get().convert(msg);
-    GuidanceMessage *msg = (GuidanceMessage *)tmp;
-    LOG_F(INFO, "receive guidance msg from %d", msg->from);
-    debug_print_guidance(&msg->guide);
-  }
-  server->replica.bcast_msgs(server->m_peer_trans);
-  // server->m_measure_probe3.emplace_back(std::chrono::steady_clock::now());
-  std::chrono::steady_clock::time_point probe3 =
-      std::chrono::steady_clock::now();
-
-  double interval1 =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(probe2 - probe1)
-          .count();
-  double interval2 =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(probe3 - probe2)
-          .count();
-
-  interval1 *= 1e-3;
-  interval2 *= 1e-3;
-  LOG_F(INFO, "Msg: %d, interval1: %f us, interval2: %f us", msg_type,
-        interval1, interval2);
-}
-#endif
-
 void client_msg_cb(struct bufferevent *bev, void *ctx) {
   Server *server = (Server *)ctx;
   uint8_t tmp[2048];
@@ -276,6 +198,7 @@ void peer_general_msg_cb(struct bufferevent *bev, void *arg) {
 
   if (type == MsgTypeAppend) {
     LOG_F(3, "new MsgTypeAppend fomr peer %d", peer->id);
+    g_handle_append_gauge.set_probe1();
     AppendEntriesMessage msg;
     auto oh = msgpack::unpack((char *)tmp, msg_size);
     oh.get().convert(msg);
@@ -283,6 +206,8 @@ void peer_general_msg_cb(struct bufferevent *bev, void *arg) {
 
   } else if (type == MsgTypeAppendReply) {
     LOG_F(3, "new MsgTypeAppendReply fomr peer %d", peer->id);
+    auto probe_idx = g_append_gauge.set_probe2();
+    g_append_gauge.instant_time_us(probe_idx);
     AppenEntriesReplyMessage msg;
     auto oh = msgpack::unpack((char *)tmp, msg_size);
     oh.get().convert(msg);
@@ -347,7 +272,7 @@ void accept_client(struct evconnlistener *l, evutil_socket_t nfd,
   LOG_F(3, "accept new connection: %s:%u", ip, port);
 
   bufferevent_setcb(bev, client_msg_cb, nullptr, event_cb, ctx);
-  bufferevent_enable(bev, EV_READ | EV_PERSIST | EV_ET);
+  bufferevent_enable(bev, EV_READ | EV_PERSIST | EV_WRITE);
 }
 
 void accept_peer(struct evconnlistener *l, evutil_socket_t nfd,
@@ -431,8 +356,11 @@ void Server::recv_init_msg(bufferevent *bev) {
     }
     m_peer_ctx[msg->from].socket_bev = bev;
     m_peer_trans[msg->from] = std::make_unique<SocketTransport>(bev);
+    int fd = bufferevent_getfd(bev);
+    int flag = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int));
     bufferevent_setcb(bev, peer_general_msg_cb, nullptr, event_cb, &m_peer_ctx[msg->from]);
-    bufferevent_enable(bev, EV_READ | EV_PERSIST);
+    bufferevent_enable(bev, EV_READ | EV_WRITE | EV_PERSIST | EV_ET);
   }
 }
 
@@ -462,13 +390,17 @@ bool Server::connect_peer(int id) {
   int res =
       bufferevent_socket_connect(peer.socket_bev, (struct sockaddr *)&peer_addr,
                                  sizeof(struct sockaddr_in));
+
+  int fd = bufferevent_getfd(peer.socket_bev);
+  int flag = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int));
   if (res != 0) {
     LOG_F(INFO, "bufferevent_socket_connect failure! code: %d", errno);
     return false;
   }
   bufferevent_setcb(peer.socket_bev, peer_general_msg_cb, nullptr,
                     connect_peer_event_cb, &peer);
-  bufferevent_enable(peer.socket_bev, EV_READ | EV_PERSIST);
+  bufferevent_enable(peer.socket_bev, EV_READ | EV_WRITE | EV_PERSIST | EV_ET);
 
   return true;
 }
@@ -485,7 +417,7 @@ void Server::periodic_peer(int id) {
         }
       },
       &m_peer_ctx[id]);
-  struct timeval one_sec = {1, 0};
+  struct timeval one_sec = {5, 0};
   m_peer_ctx[id].retry_ev = ev_period;
   event_add(ev_period, &one_sec);
 }
@@ -514,8 +446,8 @@ void Server::run() {
   event_base_free(m_base);
 }
 
-int id = 0;
-std::vector<std::string> peers_addr;
+int cfg_id = 0;
+std::vector<std::string> cfg_peers_addr;
 
 bool parse_cmd(int argc, char **argv) {
   static struct option long_options[] = {
@@ -535,13 +467,13 @@ bool parse_cmd(int argc, char **argv) {
           case 0:
             LOG_F(1, "id = %s", optarg);
             mandatory += 1;
-            id = std::stoi(optarg);
+            cfg_id = std::stoi(optarg);
             break;
 
           case 1:
             LOG_F(1, "peers: %s", optarg);
             mandatory += 1;
-            parse_addr(optarg, peers_addr);
+            parse_addr(optarg, cfg_peers_addr);
             break;
         }
 
@@ -569,13 +501,14 @@ int main(int argc, char **argv) {
   if (!parse_cmd(argc, argv)) {
     return 1;
   }
+  signal(SIGPIPE, SIG_IGN);
 
   std::vector<int> peers{0, 1, 2};
-  Server server(id, peers);
+  Server server(cfg_id, peers);
 
-  server.m_peer_addresses[0] = peers_addr[0];
-  server.m_peer_addresses[1] = peers_addr[1];
-  server.m_peer_addresses[2] = peers_addr[2];
+  server.m_peer_addresses[0] = cfg_peers_addr[0];
+  server.m_peer_addresses[1] = cfg_peers_addr[1];
+  server.m_peer_addresses[2] = cfg_peers_addr[2];
 
   server.m_service_port[0] = 9990;
   server.m_service_port[1] = 9991;

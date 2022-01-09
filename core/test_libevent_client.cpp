@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #include <vector>
 #include <chrono>
@@ -78,7 +79,7 @@ public:
 };
 
 int main(int c, char **v) {
-  const char *server_ip = "10.1.6.233";
+  const char *server_ip = "127.0.0.1";
   struct sockaddr_in sin;
 
   const char *cp;
@@ -113,14 +114,14 @@ int main(int c, char **v) {
     query[i] = 'a';
   }
 
-  for (int i = 0; i < 1000; i++) {
+  for (int i = 0; i < 3; i++) {
     cp = query;
     remaining = send_size;
     gauge.set_probe1();
     while (remaining) {
       n_written = send(fd, cp, remaining, 0);
       if (n_written <= 0) {
-        perror("send");
+        printf("send error: %d, %s\n", errno, strerror(errno));
         return 1;
       }
       remaining -= n_written;

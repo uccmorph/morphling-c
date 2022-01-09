@@ -686,7 +686,7 @@ void thread_run(int tid) {
 #endif
   }
 
-  event_base_free(base);
+  // event_base_free(base);
 }
 
 int main(int argc, char **argv) {

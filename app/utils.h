@@ -26,9 +26,15 @@ class Gauge {
   std::vector<std::chrono::steady_clock::time_point> measure_probe1;
   std::vector<std::chrono::steady_clock::time_point> measure_probe2;
   bool disable = false;
+  std::string m_title;
 
 public:
   Gauge() {
+    measure_probe1.reserve(1000000);
+    measure_probe2.reserve(1000000);
+  }
+
+  Gauge(const std::string title): m_title(title) {
     measure_probe1.reserve(1000000);
     measure_probe2.reserve(1000000);
   }
@@ -103,7 +109,7 @@ public:
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
             .count();
     res *= 1e-3;
-    printf("loop %zu, interval: %f us\n", measure_probe1.size(), res);
+    printf("[%s] loop %zu, interval: %f us\n", m_title.c_str(), measure_probe1.size(), res);
   }
 
   void instant_time_us(size_t idx) {
@@ -117,7 +123,7 @@ public:
         std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
             .count();
     res *= 1e-3;
-    printf("loop %zu, interval: %f us\n", idx, res);
+    printf("[%s] loop %zu, interval: %f us\n", m_title.c_str(), idx, res);
   }
 };
 

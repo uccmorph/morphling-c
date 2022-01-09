@@ -43,22 +43,25 @@ int set_keepalive(int fd, int keepalive, int cnt, int idle, int intvl) {
 
 void read_cb(struct bufferevent* bev, void* ctx) {
   struct client_ctx_st* client_ctx = (struct client_ctx_st*)ctx;
-  printf("read_cb\n");
-
-  int fd = bufferevent_getfd(bev);
   struct evbuffer* input = bufferevent_get_input(bev);
-  struct evbuffer* output = bufferevent_get_output(bev);
-  // char* line = evbuffer_readln(input, NULL, EVBUFFER_EOL_NUL);
+  auto size = evbuffer_get_length(input);
+  printf("read_cb, evbuffer length: %zu\n", size);
+
+
+  // int fd = bufferevent_getfd(bev);
+  // struct evbuffer* input = bufferevent_get_input(bev);
+  // struct evbuffer* output = bufferevent_get_output(bev);
+  // // char* line = evbuffer_readln(input, NULL, EVBUFFER_EOL_NUL);
   char tmp[1024];
-  size_t n = bufferevent_read(bev, tmp, 1024);
+  size_t n = bufferevent_read(bev, tmp, 5);
   printf("read %zu bytes\n", n);
 
-  char *reply = new char[1000];
+  // char *reply = new char[1000];
 
-  int res = bufferevent_write(bev, reply, 1000);
-  printf("write res = %d\n", res);
+  // int res = bufferevent_write(bev, reply, 1000);
+  // printf("write res = %d\n", res);
 
-  delete [] reply;
+  // delete [] reply;
 
 
 
@@ -121,7 +124,7 @@ void listener_cb(struct evconnlistener* l, evutil_socket_t nfd,
   }
   client_ctx->reply_size = 1000;
 
-  bufferevent_setcb(bev, read_cb, nullptr, event_cb, client_ctx);
+  bufferevent_setcb(bev, read_cb, write_cb, event_cb, client_ctx);
   bufferevent_enable(bev, EV_READ | EV_WRITE | EV_PERSIST);
 }
 

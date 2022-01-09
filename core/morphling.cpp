@@ -130,7 +130,7 @@ void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
     reply_guidance(from);
     return;
   }
-
+  LOG_F(INFO, "recv AppendEntriesMessage, index: %zu", msg.entries[0].index);
   m_smrs[msg.group_id].handle_append_entries(msg, from);
   prepare_msgs();
 }
@@ -141,7 +141,7 @@ void Morphling::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int f
     reply_guidance(from);
     return;
   }
-
+  LOG_F(INFO, "recv AppenEntriesReplyMessage, index: %zu", msg.index);
   m_smrs[msg.group_id].handle_append_entries_reply(msg, from);
   prepare_msgs();
 }
@@ -186,7 +186,7 @@ bool Morphling::prepare_msgs() {
 bool Morphling::maybe_apply() {
   for (auto &e : m_apply_entries) {
     auto op = parse_operation(e.data);
-    LOG_F(3, "apply entry: %s, op: %d, key: 0x%8x", e.debug().c_str(), op->op_type, op->key_hash);
+    LOG_F(INFO, "apply entry: %s, op: %d, key: 0x%8x", e.debug().c_str(), op->op_type, op->key_hash);
     ClientReplyMessage reply;
     reply.success = true;
     reply.guidance = m_guide;
@@ -213,9 +213,11 @@ void Morphling::bcast_msgs(std::unordered_map<int, std::unique_ptr<Transport>> &
 
     switch (msg.type) {
     case MsgTypeAppend:
+      LOG_F(INFO, "append entry: %s", msg.append_msg.entries[0].debug().c_str());
       trans->send(msg.append_msg);
       break;
     case MsgTypeAppendReply:
+      LOG_F(INFO, "send append result index: %zu", msg.append_reply_msg.index);
       trans->send(msg.append_reply_msg);
       break;
     case MsgTypeGuidance:
