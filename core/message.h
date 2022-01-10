@@ -70,19 +70,19 @@ struct ClientMessage{
 };
 
 struct ClientReplyMessage{
-    int from;
-    bool success;
-    Guidance guidance;
-    uint64_t key_hash;
-    std::vector<uint8_t> reply_data;
+  int from;
+  bool success;
+  Guidance guidance;
+  uint64_t key_hash;
+  std::vector<uint8_t> reply_data;
 
-    MSGPACK_DEFINE(from, success, guidance, key_hash, reply_data);
+  MSGPACK_DEFINE(from, success, guidance, key_hash, reply_data);
 };
 
 struct GuidanceMessage{
   int from;
-  Guidance guide;
   int votes;
+  Guidance guide;
 
   // MSGPACK_DEFINE(from, guide, votes);
 };
@@ -106,11 +106,9 @@ struct GenericMessage {
 };
 
 
-// useless struct
-struct RPCMessage {
-  uint32_t header_size:24;
-  uint32_t header_type:8;
-  std::string payload;
+struct MessageHeader {
+  uint32_t size:24;
+  uint32_t type:8;
 };
 
 #endif // __CORE_MESSAGE_H__

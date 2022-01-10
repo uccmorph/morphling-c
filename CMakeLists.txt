@@ -29,7 +29,11 @@ add_library(${CORE_LIB_NAME} STATIC ${SOURCES})
 target_link_libraries(${CORE_LIB_NAME} dl event)
 
 # app
-add_executable(server app/server.cpp app/utils.cpp)
+# add_executable(server app/server.cpp app/utils.cpp)
+# set_target_properties(server PROPERTIES LINK_FLAGS -pthread)
+# target_link_libraries(server ${CORE_LIB_NAME} event)
+
+add_executable(server app/server2.cpp app/utils.cpp)
 set_target_properties(server PROPERTIES LINK_FLAGS -pthread)
 target_link_libraries(server ${CORE_LIB_NAME} event)
 
@@ -37,7 +41,11 @@ target_link_libraries(server ${CORE_LIB_NAME} event)
 # set_target_properties(client PROPERTIES LINK_FLAGS -pthread)
 # target_link_libraries(client dl)
 
-add_executable(client2 app/client2.cpp app/utils.cpp)
+# add_executable(client2 app/client2.cpp app/utils.cpp)
+# set_target_properties(client2 PROPERTIES LINK_FLAGS -pthread)
+# target_link_libraries(client2 ${CORE_LIB_NAME} event)
+
+add_executable(client2 app/client3.cpp app/utils.cpp)
 set_target_properties(client2 PROPERTIES LINK_FLAGS -pthread)
 target_link_libraries(client2 ${CORE_LIB_NAME} event)
 

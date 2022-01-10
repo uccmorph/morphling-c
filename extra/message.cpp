@@ -60,6 +60,7 @@ struct ClientMessage: public Message {
 
 struct NestedMessage: public Message {
   int data;
+  std::vector<uint8_t> binary;
 
   NestedMessage() {
     header.type = MessageType::Nested;
