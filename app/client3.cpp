@@ -222,7 +222,7 @@ class Client {
     LOG_F(INFO, "set new guidance of replica: %d", id);
     // m_guidace = guide;
     m_one_turn_collection[id] = guide;
-    debug_print_guidance(&m_one_turn_collection[id]);
+    // debug_print_guidance(&m_one_turn_collection[id]);
   }
 
   bool check_guidance_quorum() {
@@ -311,8 +311,13 @@ class Client {
 /* --------------- Channel --------------- */
 
 void Channel::build_event() {
-  event *ev = event_new(ev_base, fd, EV_READ | EV_PERSIST, handle_reply, this);
-
+  event_callback_fn cb;
+  if (cfg_unreplicated_read) {
+    cb = handle_ur_reply;
+  } else {
+    cb = handle_reply;
+  }
+  event *ev = event_new(ev_base, fd, EV_READ | EV_PERSIST, cb, this);
   event_add(ev, nullptr);
 }
 
@@ -521,7 +526,7 @@ bool check_setup(std::vector<Client> &clients) {
         LOG_F(FATAL, "client %d update leading guidance fail", c.get_id());
       }
       // LOG_F(INFO, "client use guidance:");
-      debug_print_guidance(&c.peek_local_guidance());
+      // debug_print_guidance(&c.peek_local_guidance());
       c.status = Client::status_t::idle;
     }
   }
@@ -614,6 +619,9 @@ int main(int argc, char **argv) {
 
   g_latency_gauge.resize(cfg_total_clients);
   int thread_nums = cfg_total_clients / cfg_client_grouping;
+
+  Gauge gauge;
+  gauge.set_probe1();
   std::vector<std::thread> threads;
   threads.reserve(thread_nums);
   for (int i = 0; i < thread_nums; i++) {
@@ -631,5 +639,8 @@ int main(int argc, char **argv) {
   for (auto &t : threads) {
     t.join();
   }
+
+  gauge.set_probe2();
+  gauge.total_time_ms(cfg_msg_nums);
 
 }

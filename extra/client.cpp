@@ -145,7 +145,7 @@ bool parse_cmd(int argc, char **argv) {
   static struct option long_options[] = {
       {"lt", required_argument, nullptr, 0},
       {"size", required_argument, nullptr, 0},
-      {"total", required_argument, nullptr, 0},
+      {"t", required_argument, nullptr, 0},
       {"ct", required_argument, nullptr, 0},
       {0, 0, 0, 0}};
 
@@ -301,7 +301,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  const char *server_ip = "127.0.0.1";
+  const char *server_ip = "10.1.6.233";
   int server_port = 40713;
 
   const char *cp;

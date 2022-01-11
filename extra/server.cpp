@@ -372,9 +372,9 @@ int main(int argc, char **argv) {
 
 
   std::unordered_map<int, std::string> peer_addr;
-  peer_addr[0] = "127.0.0.1";
-  peer_addr[1] = "127.0.0.1";
-  peer_addr[2] = "127.0.0.1";
+  peer_addr[0] = "10.1.6.233";
+  peer_addr[1] = "10.1.6.234";
+  peer_addr[2] = "10.1.6.235";
 
   std::unordered_map<int, int> peer_port;
   peer_port[0] = 40713;

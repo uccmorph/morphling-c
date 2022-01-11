@@ -244,7 +244,8 @@ void UDPServer::init_service() {
 
           if (header.type == MessageType::MsgTypeClient) {
             size_t msg_size = sizeof(header) + header.size;
-            uint8_t *msg_buf = new uint8_t[msg_size];
+            // uint8_t *msg_buf = new uint8_t[msg_size];
+            uint8_t msg_buf[2048];
             int read_n = recvfrom(fd, msg_buf, msg_size, 0, (sockaddr *)&addr, &addr_len);
             assert(read_n == (int)msg_size);
             uint8_t *tmp = msg_buf + sizeof(header);
@@ -258,7 +259,7 @@ void UDPServer::init_service() {
             server->replica->handle_operation(msg, std::move(trans));
             server->replica->bcast_msgs(server->m_peer_trans);
 
-            delete []msg_buf;
+            // delete []msg_buf;
           } else if (header.type == MessageType::MsgTypeGetGuidance) {
             uint8_t msg_buf[4];
             recvfrom(fd, msg_buf, 0, 0, (sockaddr *)&addr, &addr_len);
@@ -304,7 +305,7 @@ void UDPServer::init_service() {
           } else if (header.type == MessageType::MsgTypeGuidance) {
             GuidanceMessage *msg = (GuidanceMessage *)tmp;
             LOG_F(INFO, "receive guidance msg from %d", msg->from);
-            debug_print_guidance(&msg->guide);
+            // debug_print_guidance(&msg->guide);
           } else {
             LOG_F(ERROR, "peer msg error type %d", header.type);
           }
