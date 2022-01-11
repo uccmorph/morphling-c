@@ -55,3 +55,14 @@ total time: 1045.016271 ms, throughput: 28.707687 Kops
 * So, transport should not be bottleneck at present, neither read mode.
 * The key to improve throughput is how to minimize system overhead on app logic.
 
+server average processing time
+```
+./client2 --total 12 --group 3 --ro --ur --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 100000 -v ERROR
+23421 points, average time: 36.878784 us
+25726 points, average time: 36.483946 us
+25962 points, average time: 36.181843 us
+24903 points, average time: 35.182348 us
+ucc@desktop-8sjudi:~/code/morphling-c/build$ ./client-run.sh
+total time: 3852.494500 ms, throughput: 25.957208 Kops
+```
+* Compare to `extra`'s result, average processing time is larger.

@@ -36,11 +36,14 @@ class Gauge {
   std::vector<std::chrono::steady_clock::time_point> measure_probe2;
   bool disable = false;
   std::string m_title;
+  size_t m_last_calculate_idx = 0;
+  std::vector<double> calculate_helper;
 
 public:
   Gauge() {
     measure_probe1.reserve(1000000);
     measure_probe2.reserve(1000000);
+    calculate_helper.reserve(1000000);
   }
 
   Gauge(const std::string title): m_title(title) {
@@ -134,6 +137,28 @@ public:
     res *= 1e-3;
     printf("[%s] loop %zu, interval: %f us\n", m_title.c_str(), idx, res);
   }
+
+  void average_time_us() {
+    if (disable) {
+      return;
+    }
+    size_t probes = measure_probe2.size() - m_last_calculate_idx;
+    double acc = 0.0;
+    for (size_t i = m_last_calculate_idx; i < measure_probe2.size(); i++) {
+      auto diff = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      measure_probe2[i] - measure_probe1[i])
+                      .count();
+      diff *= 1e-3;
+      acc += diff;
+    }
+    if (probes > 0) {
+      double time = acc / probes;
+      printf("[%s] %zu points, average time: %f us\n", m_title.c_str(), probes, time);
+    } else {
+      printf("[%s] no probe points in these time\n", m_title.c_str());
+    }
+    m_last_calculate_idx = measure_probe2.size();
+  }
 };
 
 class UDPDestination {
@@ -158,7 +183,9 @@ public:
   }
 };
 
-Gauge g_client_handler_gauge;
+Gauge g_client_handler_gauge("recv-send");
+Gauge g_recv_gauge("recv-processing");
+Gauge g_send_gauge("processing-send");
 
 class UDPServer {
 public:
@@ -229,8 +256,9 @@ void UDPServer::on_client_msg(ClientMessage &msg, std::unique_ptr<UDPDestination
   memcpy(buf, &reply, sizeof(reply));
   dest->send(buf, reply.header.size);
   m_seq += 1;
+  g_send_gauge.set_probe2();
   auto probe_idx = g_client_handler_gauge.set_probe2();
-  g_client_handler_gauge.instant_time_us(probe_idx);
+  // g_client_handler_gauge.instant_time_us(probe_idx);
 }
 
 UDPServer::UDPServer() {
@@ -250,6 +278,7 @@ bool UDPServer::init_base_service() {
     return false;
   }
 
+  fcntl(m_sock_fd, F_SETFL, O_NONBLOCK);
   int ev_flag = EV_READ | EV_PERSIST;
   event *l_ev = event_new(m_base, m_sock_fd, ev_flag, new_udp_event, this);
   event_add(l_ev, nullptr);
@@ -260,6 +289,17 @@ bool UDPServer::init_base_service() {
         ClientMessage &cmsg = reinterpret_cast<ClientMessage &>(msg);
         this->on_client_msg(cmsg, dest);
       });
+
+  event *ev_period = event_new(
+      m_base, -1, EV_PERSIST,
+      [](evutil_socket_t fd, short what, void *arg) {
+        g_recv_gauge.average_time_us();
+        g_send_gauge.average_time_us();
+        g_client_handler_gauge.average_time_us();
+      },
+      nullptr);
+  struct timeval one_sec = {1, 0};
+  event_add(ev_period, &one_sec);
 
   return true;
 }
@@ -290,6 +330,7 @@ void UDPServer::start() {
 
 void UDPServer::handle_msg(int fd) {
   g_client_handler_gauge.set_probe1();
+  g_recv_gauge.set_probe1();
   sockaddr_in addr;
   socklen_t addr_len = sizeof(addr);
   // if we don't read it out, then it may keep notifying EV_READ
@@ -300,7 +341,7 @@ void UDPServer::handle_msg(int fd) {
   int read_n = recvfrom(fd, buf, size, MSG_PEEK, (sockaddr *)&addr, &addr_len);
   // debug_print("read %d bytes from %s:%d\n", read_n, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
   // debug_print("header, size: %u, type: %u\n", header.size, header.type);
-
+  g_recv_gauge.set_probe2();
   auto find_itr = m_callbacks.find((int)header.type);
   if (find_itr == m_callbacks.end()) {
     debug_print("type %u is not register\n", header.type);
@@ -317,18 +358,19 @@ void UDPServer::handle_msg(int fd) {
 
 
   std::unique_ptr<UDPDestination> dest = std::make_unique<UDPDestination>(fd, addr);
-  for (auto &peer : m_peer_info) {
-    auto &info = peer.second;
-    std::string ip(inet_ntoa(addr.sin_addr));
-    auto port = ntohs(addr.sin_port);
-    if (ip == info.ip && port == info.port) {
-      dest->peer_id = peer.first;
-    }
-  }
+  // for (auto &peer : m_peer_info) {
+  //   auto &info = peer.second;
+  //   std::string ip(inet_ntoa(addr.sin_addr));
+  //   auto port = ntohs(addr.sin_port);
+  //   if (ip == info.ip && port == info.port) {
+  //     dest->peer_id = peer.first;
+  //   }
+  // }
   if (header.type == MessageType::Client) {
     ClientMessage msg;
 
     auto [buf, size] = msg_cast(msg);
+    g_send_gauge.set_probe1();
     int read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&addr, &addr_len);
     if (read_n != size) {
       debug_print("read size %d is not equal to size %zu\n", read_n, size);
@@ -417,7 +459,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  g_client_handler_gauge.set_disable(true);
+  g_client_handler_gauge.set_disable(false);
   std::unordered_map<int, std::string> peer_addr;
   peer_addr[0] = "127.0.0.1";
   peer_addr[1] = "127.0.0.1";

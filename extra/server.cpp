@@ -36,6 +36,7 @@ class Gauge {
   std::vector<std::chrono::steady_clock::time_point> measure_probe2;
   bool disable = false;
   std::string m_title;
+  int m_report_interval = 10000; // calculate average latency every 10000 msgs
 
 public:
   Gauge() {
@@ -133,6 +134,13 @@ public:
             .count();
     res *= 1e-3;
     printf("[%s] loop %zu, interval: %f us\n", m_title.c_str(), idx, res);
+  }
+
+  void average_time_us() {
+    if (disable) {
+      return;
+    }
+
   }
 };
 

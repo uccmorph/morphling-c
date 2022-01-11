@@ -27,6 +27,7 @@ class Gauge {
   std::vector<std::chrono::steady_clock::time_point> measure_probe2;
   bool disable = false;
   std::string m_title;
+  size_t m_last_calculate_idx = 0;
 
 public:
   Gauge() {
@@ -124,6 +125,28 @@ public:
             .count();
     res *= 1e-3;
     printf("[%s] loop %zu, interval: %f us\n", m_title.c_str(), idx, res);
+  }
+
+  void average_time_us() {
+    if (disable) {
+      return;
+    }
+    size_t probes = measure_probe2.size() - m_last_calculate_idx;
+    double acc = 0.0;
+    for (size_t i = m_last_calculate_idx; i < measure_probe2.size(); i++) {
+      auto diff = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      measure_probe2[i] - measure_probe1[i])
+                      .count();
+      diff *= 1e-3;
+      acc += diff;
+    }
+    if (probes > 0) {
+      double time = acc / probes;
+      printf("%zu points, average time: %f us\n", probes, time);
+    } else {
+      printf("no probe points in these time\n");
+    }
+    m_last_calculate_idx = measure_probe2.size();
   }
 };
 

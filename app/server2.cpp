@@ -15,6 +15,8 @@
 #include "transport.h"
 #include "utils.h"
 
+Gauge g_gauge_client_msg("Client op");
+
 int cfg_id = 0;
 std::vector<std::string> cfg_peers_addr;
 
@@ -235,6 +237,7 @@ void UDPServer::init_service() {
         UDPServer *server = (UDPServer *)arg;
         LOG_F(INFO, "new client event");
         if (what & EV_READ) {
+          g_gauge_client_msg.set_probe1();
           sockaddr_in addr;
           socklen_t addr_len = sizeof(addr);
           MessageHeader header;
@@ -267,6 +270,7 @@ void UDPServer::init_service() {
           } else {
             LOG_F(ERROR, "client msg error type %d", header.type);
           }
+          g_gauge_client_msg.set_probe2();
         }
       },
       this);
@@ -333,6 +337,15 @@ void UDPServer::init_service() {
       this);
   struct timeval one_sec = {5, 0};
   event_add(ev_period, &one_sec);
+
+  event *ev_latency_gauge = event_new(
+      m_base, -1, EV_PERSIST,
+      [](evutil_socket_t fd, short what, void *arg) {
+        g_gauge_client_msg.average_time_us();
+      },
+      this);
+  struct timeval gauge_interval = {1, 0};
+  event_add(ev_latency_gauge, &gauge_interval);
 }
 
 void UDPServer::start() {

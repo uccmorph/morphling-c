@@ -1,6 +1,6 @@
 /build
-core/server
-core/client
+*/server
+*/client
 
 ### C++ ###
 # Prerequisites
