@@ -186,8 +186,6 @@ private:
   bool init_udp(int port);
 
   void on_client_msg(ClientMessage &, std::unique_ptr<UDPDestination> &dest);
-  void on_nested_msg(NestedMessage &, std::unique_ptr<UDPDestination> &dest);
-  void on_nested_reply_msg(NestedReplyMessage &, std::unique_ptr<UDPDestination> &dest);
 
 public:
   UDPServer();
@@ -224,46 +222,15 @@ bool UDPServer::init_udp(int port) {
 
 void UDPServer::on_client_msg(ClientMessage &msg, std::unique_ptr<UDPDestination> &dest) {
   debug_print("recv ClientMessage from client: %d\n", msg.client_id);
-  g_client_handler_gauge.set_probe1();
-  m_pending_client[m_seq] = std::move(dest);
-  for (auto &peer : m_peer_info) {
-    auto id = peer.first;
-    if (id == m_me) {
-      continue;
-    }
-    auto &info = peer.second;
 
-    UDPDestination dest(m_sock_fd, info.sock_addr);
-    NestedMessage nest;
-    nest.data = m_seq;
-    auto [buf, size] = msg_cast(nest);
-    dest.send(buf, size);
-  }
+  uint8_t buf[2048];
+  ClientReplyMessage reply;
+  reply.header.size = 1020;
+  memcpy(buf, &reply, sizeof(reply));
+  dest->send(buf, reply.header.size);
   m_seq += 1;
   auto probe_idx = g_client_handler_gauge.set_probe2();
   g_client_handler_gauge.instant_time_us(probe_idx);
-}
-
-void UDPServer::on_nested_msg(NestedMessage &msg, std::unique_ptr<UDPDestination> &dest) {
-  debug_print("recv NestedMessage %d from %d\n", msg.data, dest->peer_id);
-
-  NestedReplyMessage reply;
-  reply.data = msg.data;
-  auto [buf, size] = msg_cast(reply);
-  dest->send(buf, size);
-}
-
-void UDPServer::on_nested_reply_msg(NestedReplyMessage &msg, std::unique_ptr<UDPDestination> &dest) {
-  debug_print("recv NestedReplyMessage %d from %d\n", msg.data, dest->peer_id);
-
-  if (!m_seq_finished[msg.data]) {
-    m_seq_finished[msg.data] = true;
-    ClientReplyMessage creply;
-    creply.data = msg.data;
-    auto [buf, size] = msg_cast(creply);
-    m_pending_client[msg.data]->send(buf, size);
-    m_pending_client.erase(msg.data);
-  }
 }
 
 UDPServer::UDPServer() {
@@ -292,18 +259,6 @@ bool UDPServer::init_base_service() {
       [this](Message &msg, std::unique_ptr<UDPDestination> &dest) {
         ClientMessage &cmsg = reinterpret_cast<ClientMessage &>(msg);
         this->on_client_msg(cmsg, dest);
-      });
-  register_cb(
-      MessageType::Nested,
-      [this](Message &msg, std::unique_ptr<UDPDestination> &dest) {
-        NestedMessage &nmsg = reinterpret_cast<NestedMessage &>(msg);
-        this->on_nested_msg(nmsg, dest);
-      });
-  register_cb(
-      MessageType::NestedReply,
-      [this](Message &msg, std::unique_ptr<UDPDestination> &dest) {
-        NestedReplyMessage &nrmsg = reinterpret_cast<NestedReplyMessage &>(msg);
-        this->on_nested_reply_msg(nrmsg, dest);
       });
 
   return true;
@@ -334,6 +289,7 @@ void UDPServer::start() {
 }
 
 void UDPServer::handle_msg(int fd) {
+  g_client_handler_gauge.set_probe1();
   sockaddr_in addr;
   socklen_t addr_len = sizeof(addr);
   // if we don't read it out, then it may keep notifying EV_READ
@@ -372,26 +328,6 @@ void UDPServer::handle_msg(int fd) {
   if (header.type == MessageType::Client) {
     ClientMessage msg;
 
-    auto [buf, size] = msg_cast(msg);
-    int read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&addr, &addr_len);
-    if (read_n != size) {
-      debug_print("read size %d is not equal to size %zu\n", read_n, size);
-    }
-
-    m_callbacks[(int)header.type](msg, dest);
-  }
-  if (header.type == MessageType::Nested) {
-    NestedMessage nest;
-    auto [buf, size] = msg_cast(nest);
-    int read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&addr, &addr_len);
-    if (read_n != size) {
-      debug_print("read size %d is not equal to size %zu\n", read_n, size);
-    }
-
-    m_callbacks[(int)header.type](nest, dest);
-  }
-  if (header.type == MessageType::NestedReply) {
-    NestedReplyMessage msg;
     auto [buf, size] = msg_cast(msg);
     int read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&addr, &addr_len);
     if (read_n != size) {
@@ -481,7 +417,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-
+  g_client_handler_gauge.set_disable(true);
   std::unordered_map<int, std::string> peer_addr;
   peer_addr[0] = "127.0.0.1";
   peer_addr[1] = "127.0.0.1";

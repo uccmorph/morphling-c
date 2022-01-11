@@ -204,17 +204,16 @@ void new_udp_event(evutil_socket_t fd, short what, void *arg) {
     socklen_t len = sizeof(sockaddr_in);
     int read_n = recvfrom(fd, re_buf, re_size, MSG_PEEK,
                           (sockaddr *)&conn_ctx->udp_dest, &len);
-
     if (header.type != MessageType::ClientReply) {
       uint8_t drain_buf[64];
       recvfrom(fd, drain_buf, 0, 0, (sockaddr *)&conn_ctx->udp_dest, &len);
       debug_print("error: reply not ClientReply\n");
     } else {
-      ClientReplyMessage reply;
-      auto [buf, size] = msg_cast(reply);
+      uint8_t buf[2048];
       read_n =
-          recvfrom(fd, buf, size, 0, (sockaddr *)&conn_ctx->udp_dest, &len);
-      debug_print("drain reply: %d\n", reply.data);
+          recvfrom(fd, buf, header.size, 0, (sockaddr *)&conn_ctx->udp_dest, &len);
+      assert(read_n == (int)header.size);
+      debug_print("drain reply: %d\n", header.size);
     }
     conn_ctx->status = 0;
   } else {
@@ -301,7 +300,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  const char *server_ip = "10.1.6.233";
+  const char *server_ip = "127.0.0.1";
   int server_port = 40713;
 
   const char *cp;
@@ -329,7 +328,7 @@ int main(int argc, char **argv) {
     threads[i].join();
   }
   gauge.set_probe2();
-  gauge.total_time_ms(cfg_total_threads * cfg_conn_in_thread * cfg_loop_times);
+  gauge.total_time_ms(cfg_total_threads * cfg_loop_times);
 
   // send_multiple(fd, server_ip, server_port);
 }

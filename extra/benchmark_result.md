@@ -41,3 +41,6 @@ yijian@kvs-backup:~/morphling-c/extra$ ./client --lt 2000 --t 8 --ct 14
 
 When `ct` become 13, throughput improvement is low.
 When `ct` become 14, the program stuck
+
+* However, there is a bug in client.cpp, which can make throughput incorrectly calculated and larger than real.
+* After adding gauge in echo_server.cpp, we find that client message handling time is around 6 us to 50 us. As same requests coming, average handling time decreases.
