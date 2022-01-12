@@ -22,6 +22,7 @@
 Gauge g_gauge("Client op");
 Gauge g_append_gauge("Append");
 Gauge g_handle_append_gauge("New entry");
+Gauge g_send_gauge("send");
 
 class SocketTransport : public Transport {
   bufferevent *m_bev;
@@ -47,7 +48,7 @@ void SocketTransport::send(uint8_t *buf, uint64_t size) {
 void SocketTransport::__send(MessageType type, uint8_t *payload,
                              uint64_t payload_size) {
   LOG_F(5, "[%s] send %zu bytes", __FUNCTION__, payload_size);
-
+  g_send_gauge.set_probe1();
   char header_buf[4];
   for (int i = 0; i < 4; i++) {
     header_buf[i] = (payload_size >> (i * 8)) & 0xFF;
@@ -55,6 +56,8 @@ void SocketTransport::__send(MessageType type, uint8_t *payload,
   header_buf[3] = type & 0xFF;
   bufferevent_write(m_bev, header_buf, 4);
   bufferevent_write(m_bev, payload, payload_size);
+  auto probe_idx = g_send_gauge.set_probe2();
+  g_send_gauge.instant_time_us(probe_idx);
 }
 
 void SocketTransport::send(AppendEntriesMessage &msg) {

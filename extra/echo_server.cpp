@@ -176,7 +176,10 @@ public:
     m_fd(fd), m_addr(addr), m_len(sizeof(sockaddr_in)) {}
 
   void send(uint8_t *buf, size_t size) {
+    // start = now();
     int send_n = sendto(m_fd, buf, size, 0, (sockaddr *)&m_addr, m_len);
+    // end = now();
+    // time = end - start;
     if (send_n != size) {
       debug_print("send size %d is not equal to `size %zu`\n", send_n, size);
     }
@@ -186,6 +189,16 @@ public:
 Gauge g_client_handler_gauge("recv-send");
 Gauge g_recv_gauge("recv-processing");
 Gauge g_send_gauge("processing-send");
+
+template <typename T>
+void recv_msg(T &msg, int fd, sockaddr_in &addr, socklen_t &addr_len) {
+  auto [buf, size] = msg_cast(msg);
+  g_send_gauge.set_probe1();
+  int read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&addr, &addr_len);
+  if (read_n != size) {
+    debug_print("read size %d is not equal to size %zu\n", read_n, size);
+  }
+}
 
 class UDPServer {
 public:
@@ -252,13 +265,13 @@ void UDPServer::on_client_msg(ClientMessage &msg, std::unique_ptr<UDPDestination
 
   uint8_t buf[2048];
   ClientReplyMessage reply;
-  reply.header.size = 1020;
+  reply.header.size = 32;
   memcpy(buf, &reply, sizeof(reply));
   dest->send(buf, reply.header.size);
   m_seq += 1;
   g_send_gauge.set_probe2();
   auto probe_idx = g_client_handler_gauge.set_probe2();
-  // g_client_handler_gauge.instant_time_us(probe_idx);
+  g_client_handler_gauge.instant_time_us(probe_idx);
 }
 
 UDPServer::UDPServer() {
@@ -369,13 +382,13 @@ void UDPServer::handle_msg(int fd) {
   if (header.type == MessageType::Client) {
     ClientMessage msg;
 
-    auto [buf, size] = msg_cast(msg);
-    g_send_gauge.set_probe1();
-    int read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&addr, &addr_len);
-    if (read_n != size) {
-      debug_print("read size %d is not equal to size %zu\n", read_n, size);
-    }
-
+    // auto [buf, size] = msg_cast(msg);
+    // g_send_gauge.set_probe1();
+    // int read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&addr, &addr_len);
+    // if (read_n != size) {
+    //   debug_print("read size %d is not equal to size %zu\n", read_n, size);
+    // }
+    recv_msg(msg, fd, addr, addr_len);
     m_callbacks[(int)header.type](msg, dest);
   }
 }

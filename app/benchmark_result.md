@@ -66,3 +66,34 @@ ucc@desktop-8sjudi:~/code/morphling-c/build$ ./client-run.sh
 total time: 3852.494500 ms, throughput: 25.957208 Kops
 ```
 * Compare to `extra`'s result, average processing time is larger.
+
+## 2022.1.12
+
+Using tcp server, send time is:
+```
+[Client op] loop 10, interval: 93.042000 us
+[send] loop 60, interval: 8.620000 us
+[Client op] loop 11, interval: 53.408000 us
+[send] loop 61, interval: 8.415000 us
+[Client op] loop 12, interval: 45.425000 us
+[send] loop 62, interval: 8.100000 us
+[Client op] loop 13, interval: 45.121000 us
+[send] loop 63, interval: 9.660000 us
+[Client op] loop 14, interval: 48.528000 us
+[send] loop 64, interval: 8.240000 us
+[Client op] loop 15, interval: 47.453000 us
+[send] loop 65, interval: 7.920000 us
+[Client op] loop 16, interval: 42.500000 us
+[send] loop 66, interval: 7.696000 us
+[Client op] loop 17, interval: 48.821000 us
+[send] loop 67, interval: 8.548000 us
+[Client op] loop 18, interval: 42.147000 us
+[send] loop 68, interval: 7.873000 us
+[Client op] loop 19, interval: 45.766000 us
+[send] loop 69, interval: 7.894000 us
+
+./client2 --total 1 --group 1 --ro --ur --replicas 10.1.6.233,10.1.6.234,10.1.6.235 --vs 1000 --nums 10 -v ERROR
+```
+
+* The first probe of Client op is the point after recv, and the second probe of Client op is the point after send.
+* So, message processing takes most of the time.
