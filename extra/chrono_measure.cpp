@@ -12,11 +12,13 @@
 #include <functional>
 #include <sstream>
 #include <atomic>
+#include <tuple>
 
 #include <msgpack.hpp>
 
 using namespace std::chrono;
 
+// ------ Note: statistics may shift drastically on different platform (VM, WSL, Bare Metal ...)
 
 /*
 yijian@kvs-backup:~/morphling-c/extra$ g++ chrono_measure.cpp -pthread -std=c++17 -O0
@@ -29,7 +31,7 @@ takes 684.000000 ns
 yijian@kvs-backup:~/morphling-c/extra$ ./a.out
 takes 671.000000 ns
 */
-void consecutive_chrono() {
+void base_chrono() {
   auto start = steady_clock::now();
   auto end = steady_clock::now();
   double diff = (end - start).count();
@@ -380,6 +382,34 @@ void new_buffer(size_t size) {
 }
 
 
+void consecutive_new_buffer(size_t size) {
+  auto start = steady_clock::now();
+  char *buffer = new char[size];
+  auto end = steady_clock::now();
+  double diff = (end - start).count();
+  printf("takes %f ns\n", diff);
+
+  delete []buffer;
+
+  start = steady_clock::now();
+  buffer = new char[size];
+  end = steady_clock::now();
+  diff = (end - start).count();
+  printf("takes %f ns\n", diff);
+
+  delete []buffer;
+
+  start = steady_clock::now();
+  buffer = new char[size];
+  end = steady_clock::now();
+  diff = (end - start).count();
+  printf("takes %f ns\n", diff);
+
+  delete []buffer;
+
+}
+
+
 /*
 yijian@kvs-backup:~/morphling-c/extra$ g++ chrono_measure.cpp -pthread -std=c++17 -O0
 yijian@kvs-backup:~/morphling-c/extra$ ./a.out
@@ -664,9 +694,116 @@ void message_type_casting() {
 }
 
 
+/*
+On WSL, base measurement case is 0~100 ns
+about 400 ns more than `message_type_casting`,
+and changing `pair` tp `tuple` make things worse.
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ g++ chrono_measure.cpp -pthread -std=c++17 -O0
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 600.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 600.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 400.000000 ns
+
+-O3 drop the assignment line, because there are useless variables.
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ g++ chrono_measure.cpp -pthread -std=c++17 -O3
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+*/
+template <typename T>
+inline std::pair<uint8_t*, size_t> msg_cast(T &msg) {
+  return {reinterpret_cast<uint8_t *>(&msg), sizeof(msg)};
+}
+void inline_message_casting() {
+  auto start = steady_clock::now();
+  Message msg;
+  msg.data1 = 10;
+  msg.data2 = 20;
+  auto [msg_buf, msg_size] = msg_cast(msg);
+  auto end = steady_clock::now();
+  double diff = (end - start).count();
+  printf("takes %f ns\n", diff);
+  printf("msg 1: 0x%lx\n", *(uint64_t *)msg_buf);
+}
+
+/*
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ g++ chrono_measure.cpp -pthread -std=c++17 -O0
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 200.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 200.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 300.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 300.000000 ns
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+
+asm
+  lea     rax, [rbp-48]
+  mov     rdi, rax
+  call    MsgBufInfo msg_cast2<Message>(Message&)
+  mov     QWORD PTR [rbp-64], rax
+  mov     QWORD PTR [rbp-56], rdx
+  call    std::chrono::_V2::steady_clock::now()
+  mov     QWORD PTR [rbp-72], rax
+
+It seems inline function doesn't work in -O0
+
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ g++ chrono_measure.cpp -pthread -std=c++17 -O3
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+msg 1: 0xa
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+msg 1: 0xa
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+msg 1: 0xa
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+msg 1: 0xa
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 100.000000 ns
+msg 1: 0xa
+ucc@desktop-8sjudi:~/code/morphling-c/extra$ ./a.out
+takes 0.000000 ns
+msg 1: 0xa
+*/
+struct MsgBufInfo {
+  uint8_t *msg_buf;
+  size_t msg_size;
+};
+template <typename T>
+inline MsgBufInfo msg_cast2(T &msg) {
+  return {reinterpret_cast<uint8_t *>(&msg), sizeof(msg)};
+}
+void inline_message_casting2() {
+  auto start = steady_clock::now();
+  Message msg;
+  msg.data1 = 10;
+  msg.data2 = 20;
+  auto [msg_buf, msg_size] = msg_cast2(msg);
+  auto end = steady_clock::now();
+  double diff = (end - start).count();
+  printf("takes %f ns\n", diff);
+  printf("msg 1: 0x%lx\n", *(uint64_t *)msg_buf);
+}
+
 std::string ip("192.168.5.29");
 uint8_t g_buf[1024];
 
 int main() {
-  message_type_casting();
+  calling(nullptr);
 }
