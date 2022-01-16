@@ -76,7 +76,7 @@ TEST(ReplicationTest, HandelAppendEntryTest) {
     smr.handle_append_entries(msg, 0);
   }
   auto &log = smr.debug_get_log();
-  log.show_all();
+  printf("%s\n", log.debug().c_str());
   EXPECT_EQ(log.last_index(), 3);
   EXPECT_EQ(log.curr_commit(), 0);
 
@@ -139,11 +139,13 @@ TEST(ReplicationTest, HandelAppendEntryReplyTest) {
   smr.handle_append_entries_reply(test_in[1], 1);
   EXPECT_EQ(out_entries.size(), 2);
 
+  auto &log = smr.debug_get_log();
+  EXPECT_EQ(log.curr_commit(), 2);
+
   smr.handle_append_entries_reply(test_in[2], 2);
   smr.handle_append_entries_reply(test_in[3], 2);
 
-  auto &log = smr.debug_get_log();
-  log.show_all();
+  printf("%s\n", log.debug().c_str());
 
   EXPECT_EQ(out_entries.size(), 2);
 

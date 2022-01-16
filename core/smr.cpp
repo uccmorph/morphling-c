@@ -20,12 +20,15 @@ uint64_t SMRLog::entry_pos(uint64_t e_index) {
   return e_index - m_dummy_entry.index - 1;
 }
 
-void SMRLog::show_all() {
-  LOG_F(3, "log size: %zu, dummy entry (term %zu, index %zu), commit: %zu",
-        m_log.size(), m_dummy_entry.term, m_dummy_entry.index, m_commits);
-  for (auto itr = m_log.begin(); itr != m_log.end(); itr++) {
-    LOG_F(3, "itr %ld, %s", itr - m_log.begin(), (*itr).debug().c_str());
+std::string SMRLog::debug() {
+  std::stringstream ss;
+  ss << "log size: " << m_log.size() << ", dummy entry (term " << m_dummy_entry.term <<
+  ", index " << m_dummy_entry.index << "), commit: " << m_commits << "\n";
+  for (size_t i = 0; i < m_log.size(); i++) {
+    ss << "entry: " << i << ", " << m_log[i].debug() << "\n";
   }
+
+  return std::move(ss.str());
 }
 
 uint64_t SMRLog::append(Entry &e) { return SMRLog::append(e.data, e.term); }
@@ -203,25 +206,6 @@ std::tuple<bool, bool> SMR::check_safety(uint64_t prev_term,
   return std::make_tuple(false, false);
 }
 
-#if 0
-void SMR::handle_stale_entries(AppendEntriesMessage &msg) {
-  uint64_t last_index = m_log.last_index();
-  for (auto itr = msg.entries.begin(); itr != msg.entries.end(); itr++) {
-    Entry &e = m_log.entry_at((*itr).index);
-
-    // truncate when sub entries mismatch
-    if ((*itr).index > last_index || e.term != (*itr).term) {
-      Entry &e = *itr;
-      m_log.truncate(e.index);
-      for (; itr != msg.entries.end(); itr++) {
-        m_log.append(e);
-      }
-      break;
-    }
-  }
-}
-#endif
-
 uint64_t SMR::handle_operation(ClientMessage &msg) {
   auto last_idx = m_log.append(msg.op, msg.term);
   m_entry_votes.vote(m_me, last_idx);
@@ -246,12 +230,8 @@ void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
   } else {
     reply.success = true;
     if (stale) {
-      // handle_stale_entries(msg);
       // just ignore, since only one entry
     } else {
-      // for (auto &e : msg.entries) {
-      //   m_log.append(e);
-      // }
       m_log.append(msg.entry);
     }
     if (msg.commit > m_log.curr_commit()) {

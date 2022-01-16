@@ -57,14 +57,14 @@ set(ALL_TEST_NAME
   entry_vote
   smr_log
   replication
-  # basic_morphling
+  basic_morphling
 )
 
 set(ALL_TEST_SOURCES
   tests/entry_vote_test.cpp
   tests/smr_log_test.cpp
   tests/replication_test.cpp
-  # tests/basic_morphling_test.cpp
+  tests/basic_morphling_test.cpp
 )
 
 find_package(GTest CONFIG REQUIRED)

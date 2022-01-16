@@ -7,19 +7,62 @@ int calc_key_pos(uint64_t key_hash) {
   return (key_hash & DEFAULT_KEY_MASK) >> DEFAULT_MASK_OFFSET;
 }
 
+class NullTransport: public Transport {
+public:
+  ~NullTransport() {}
+  bool is_ready() {
+    return false;
+  }
+  void send(uint8_t *buf, uint64_t size) {}
+};
+
 Morphling::Morphling(int id, std::vector<int> &peers)
     : m_me(id), m_peers(peers) {
   Morphling::init_local_guidance();
   m_storage.reserve(1000);
 
+  for (int id : peers) {
+      m_network.emplace(id, std::make_unique<NullTransport>());
+  }
+
   message_cb_t<AppendEntriesMessage> ae_cb = [this](AppendEntriesMessage &msg, int to) -> bool {
-    auto &trans = get_peer_trans(to);
-    trans->send(msg);
+    auto &trans = Morphling::get_peer_trans(to);
+    if (!trans->is_ready()) {
+      return false;
+    }
+
+    size_t body_size = sizeof(AppendEntriesRawMessage);
+    size_t entry_data_size = msg.entry.data.size();
+    uint8_t *msg_buf = new uint8_t[body_size + entry_data_size];
+    AppendEntriesRawMessage &raw_msg = *reinterpret_cast<AppendEntriesRawMessage *>(msg_buf);
+
+    raw_msg.header.type = MessageType::MsgTypeAppend;
+    raw_msg.header.size = body_size + entry_data_size;
+    raw_msg.from = msg.from;
+    raw_msg.term = msg.term;
+    raw_msg.prev_term = msg.prev_term;
+    raw_msg.prev_index = msg.prev_index;
+    raw_msg.commit = msg.commit;
+    raw_msg.group_id = msg.group_id;
+
+    raw_msg.entry.term = msg.entry.term;
+    raw_msg.entry.index = msg.entry.index;
+    raw_msg.entry.data_size = entry_data_size;
+    raw_msg.copy_entry_data_in(msg.entry.data.data(), entry_data_size);
+
+    trans->send(msg_buf, raw_msg.header.size);
+
+    delete []msg_buf;
     return true;
   };
   message_cb_t<AppendEntriesReplyMessage> aer_cb = [this](AppendEntriesReplyMessage &msg, int to) -> bool {
-    auto &trans = get_peer_trans(to);
-    trans->send(msg);
+    auto &trans = Morphling::get_peer_trans(to);
+    if (!trans->is_ready()) {
+      return false;
+    }
+    msg.header.type = MessageType::MsgTypeAppendReply;
+    msg.header.size = sizeof(AppendEntriesReplyMessage);
+    trans->send((uint8_t *)&msg, msg.header.size);
     return true;
   };
   apply_cb_t apply_cb = [this](SMRLog &log, size_t start, size_t end) -> bool {
@@ -49,6 +92,8 @@ Morphling::Morphling(int id, std::vector<int> &peers)
 
       auto &trans = Morphling::m_client_pendings[idx];
       trans->send(reply_buf, reply_buf_size);
+
+      delete []reply_buf;
     }
     return true;
   };
@@ -118,21 +163,25 @@ void Morphling::handle_operation(ClientMessage &msg, TransPtr &trans) {
 
   auto op = parse_operation(msg.op);
   if (op.get()->op_type == 0) {
-    ClientReplyMessage reply;
+    auto &value = m_storage[msg.key_hash];
+    auto raw_reply = Morphling::new_client_reply(0, value.size());
+    ClientReplyRawMessage &reply = *(raw_reply);
     reply.success = true;
     reply.guidance = m_guide;
     reply.from = m_me;
     reply.key_hash = msg.key_hash;
-    reply.reply_data = m_storage[msg.key_hash];
-    LOG_F(3, "reply client read, data size: %zu", reply.reply_data.size());
+    reply.copy_data_in(value.data(), value.size());
+    LOG_F(3, "reply client read, data size: %zu", value.size());
 
-    trans->send(reply);
+    trans->send((uint8_t *)raw_reply, raw_reply->header.size);
+
+    uint8_t *reply_buf = (uint8_t *)raw_reply;
+    delete []reply_buf;
     return;
   }
 
   auto new_idx = Morphling::find_target_smr(msg.key_hash).handle_operation(msg);
   m_client_pendings[new_idx] = std::move(trans);
-  prepare_msgs();
 }
 
 void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
@@ -142,7 +191,6 @@ void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
   }
   LOG_F(INFO, "recv AppendEntriesMessage, index: %zu", msg.entry.index);
   m_smrs[msg.group_id].handle_append_entries(msg, from);
-  prepare_msgs();
 }
 
 
@@ -154,15 +202,16 @@ void Morphling::handle_append_entries_reply(AppendEntriesReplyMessage &msg, int 
   }
   LOG_F(INFO, "recv AppenEntriesReplyMessage, index: %zu", msg.index);
   m_smrs[msg.group_id].handle_append_entries_reply(msg, from);
-  prepare_msgs();
 }
 
 void Morphling::reply_guidance(TransPtr &trans) {
   GuidanceMessage msg;
+  msg.header.type = MessageType::MsgTypeGuidance;
+  msg.header.size = sizeof(GuidanceMessage);
   msg.from = m_me;
-  msg.guide = m_guide;
   msg.votes = 3;
-  trans->send(msg);
+  msg.guide = m_guide;
+  trans->send((uint8_t *)&msg, msg.header.size);
 }
 
 #if 0
@@ -191,6 +240,23 @@ Guidance& Morphling::get_guidance() {
   return m_guide;
 }
 
-std::vector<Entry>& Morphling::debug_apply_entries() {
-  return m_apply_entries;
+void Morphling::set_peer_trans(int id, TransPtr &trans) {
+  m_network[id] = std::move(trans);
+}
+
+TransPtr& Morphling::get_peer_trans(int id) {
+  return m_network[id];
+}
+
+ClientReplyRawMessage* Morphling::new_client_reply(int op_type, size_t data_size) {
+  size_t body_size = sizeof(ClientReplyRawMessage);
+  if (op_type == 1) {
+    data_size = 0;
+  }
+  uint8_t *reply_buf = new uint8_t[body_size + data_size];
+  ClientReplyRawMessage &reply = *reinterpret_cast<ClientReplyRawMessage *>(reply_buf);
+  reply.header.type = MessageType::MsgTypeClientReply;
+  reply.header.size = body_size + data_size;
+
+  return &reply;
 }

@@ -27,7 +27,6 @@ class SMRLog {
  public:
   SMRLog();
 
-  void show_all();
   uint64_t append(Entry &e);
   uint64_t append(std::vector<uint8_t> &data, uint64_t term);
   // truncate including t_idx
@@ -42,6 +41,8 @@ class SMRLog {
 
   Entry& last_entry();
   uint64_t last_index();
+
+  std::string debug();
 };
 
 

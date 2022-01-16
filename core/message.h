@@ -22,10 +22,16 @@ struct Message {
   virtual void deserialize(uint8_t *data, size_t size);
 };
 
+struct MessageHeader {
+  uint32_t size : 24;
+  uint32_t type : 8;
+};
+
 struct EntryRaw {
   uint64_t term = 0;
   uint64_t index = 0;
   size_t data_size;
+
 };
 
 struct Entry {
@@ -37,21 +43,36 @@ struct Entry {
   Entry(std::vector<uint8_t> &buf): data(buf.begin(), buf.end()) {}
 
   std::string debug() {
-    return "term: " + std::to_string(term) + "index: " + std::to_string(index) +
-           "data size: " + std::to_string(data.size());
+    return "term: " + std::to_string(term) + ", index: " + std::to_string(index) +
+           ", data size: " + std::to_string(data.size());
   }
 };
 
 struct AppendEntriesRawMessage {
+  MessageHeader header;
+
   int from = 0;
   uint64_t term = 0;
-
   uint64_t prev_term = 0;
   uint64_t prev_index = 0;
   uint64_t commit = 0;
   uint64_t group_id = 0;
 
   EntryRaw entry;
+
+  void copy_entry_data_in(uint8_t *buf, size_t size) {
+    size_t offset = sizeof(AppendEntriesRawMessage);
+    uint8_t *body = (uint8_t *)this;
+    memcpy(body + offset, buf, size);
+    assert(entry.data_size == size);
+  }
+
+  void copy_entry_data_out(uint8_t *buf, size_t size) {
+    size_t offset = sizeof(AppendEntriesRawMessage);
+    uint8_t *body = (uint8_t *)this;
+    memcpy(buf, body + offset, size);
+    assert(entry.data_size == size);
+  }
 };
 
 struct AppendEntriesMessage {
@@ -81,9 +102,10 @@ struct AppendEntriesMessage {
 };
 
 struct AppendEntriesReplyMessage {
+  MessageHeader header;
+
   int from;
   uint64_t term;
-
   bool success;
   uint64_t group_id;
   uint64_t index;
@@ -110,28 +132,47 @@ struct ClientMessage {
 };
 
 struct ClientRawMessge {
+  MessageHeader header;
+
   uint64_t term;
   uint64_t key_hash;
   size_t data_size;
 };
 
-struct ClientReplyMessage {
-  int from;
-  bool success;
-  Guidance guidance;
-  uint64_t key_hash;
-  std::vector<uint8_t> reply_data;
-};
+// struct ClientReplyMessage {
+//   int from;
+//   bool success;
+//   Guidance guidance;
+//   uint64_t key_hash;
+//   std::vector<uint8_t> reply_data;
+// };
 
 struct ClientReplyRawMessage {
+  MessageHeader header;
+
   int from;
   bool success;
   Guidance guidance;
   uint64_t key_hash;
   size_t data_size;
+
+  void copy_data_in(uint8_t *buf, size_t size) {
+    size_t offset = sizeof(ClientReplyRawMessage);
+    uint8_t *body = (uint8_t *)this;
+    memcpy(body + offset, buf, size);
+    assert(data_size == size);
+  }
+
+  void copy_data_out(uint8_t *buf, size_t size) {
+    size_t offset = sizeof(ClientReplyRawMessage);
+    uint8_t *body = (uint8_t *)this;
+    memcpy(buf, body + offset, size);
+    assert(data_size == size);
+  }
 };
 
 struct GuidanceMessage {
+  MessageHeader header;
   int from;
   int votes;
   Guidance guide;
@@ -154,10 +195,5 @@ struct GuidanceMessage {
 //   GenericMessage(GuidanceMessage &msg, int to)
 //       : type(MsgTypeGuidance), to(to), guidance_msg(msg) {}
 // };
-
-struct MessageHeader {
-  uint32_t size : 24;
-  uint32_t type : 8;
-};
 
 #endif  // __CORE_MESSAGE_H__

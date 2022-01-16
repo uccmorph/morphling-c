@@ -27,7 +27,7 @@ TEST(SMRLogTest, AppendNGetTest) {
 
     EXPECT_EQ(smr_log.last_index(), i+1);
   }
-  smr_log.show_all();
+  printf("%s\n", smr_log.debug().c_str());
 }
 
 TEST(SMRLogTest, TruncateTest) {
@@ -42,7 +42,7 @@ TEST(SMRLogTest, TruncateTest) {
 
   smr_log.truncate(3);
   EXPECT_EQ(smr_log.last_index(), 2);
-  smr_log.show_all();
+  printf("%s\n", smr_log.debug().c_str());
 
   // expect 3, 4, 5, 6, 7
   for (size_t i = 0; i < log_size; i++) {
@@ -52,7 +52,7 @@ TEST(SMRLogTest, TruncateTest) {
 
     EXPECT_EQ(smr_log.last_index(), i+3);
   }
-  smr_log.show_all();
+  printf("%s\n", smr_log.debug().c_str());
 }
 
 TEST(SMRLogTest, CommitTest) {
@@ -74,7 +74,7 @@ TEST(SMRLogTest, CommitTest) {
   res = smr_log.commit_to(5);
   EXPECT_TRUE(res);
 
-  smr_log.show_all();
+  printf("%s\n", smr_log.debug().c_str());
 }
 
 TEST(SMRLogTest, HeavyAppendTest) {
@@ -90,5 +90,5 @@ TEST(SMRLogTest, HeavyAppendTest) {
 
     EXPECT_EQ(smr_log.last_index(), i+1);
   }
-  smr_log.show_all();
+  printf("%s\n", smr_log.debug().c_str());
 }

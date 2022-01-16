@@ -17,11 +17,11 @@ public:
   virtual void send(uint8_t *buf, uint64_t size) = 0;
   virtual bool is_ready() = 0;
   // virtual void send(MessageType type, uint8_t *payload, uint64_t payload_size) = 0;
-  virtual void send(AppendEntriesMessage &msg) = 0;
-  virtual void send(AppendEntriesReplyMessage &msg) = 0;
-  virtual void send(ClientReplyMessage &msg) = 0;
-  virtual void send(GuidanceMessage &msg) = 0;
-  virtual void send(MessageType type, void *msg) = 0;
+  // virtual void send(AppendEntriesMessage &msg) = 0;
+  // virtual void send(AppendEntriesReplyMessage &msg) = 0;
+  // virtual void send(ClientReplyMessage &msg) = 0;
+  // virtual void send(GuidanceMessage &msg) = 0;
+  // virtual void send(MessageType type, void *msg) = 0;
 };
 
 #endif // __CORE_TRANSPORT_H__

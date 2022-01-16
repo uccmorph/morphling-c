@@ -33,8 +33,9 @@ struct NodeStatus {
   uint32_t start_pos:8;
   uint32_t end_pos:8;
   uint32_t alive:8;
+  uint32_t __padding:8;
 
-  NodeStatus(): start_pos(0), end_pos(0), alive(0) {}
+  NodeStatus(): start_pos(0), end_pos(0), alive(0), __padding(0) {}
 
   bool pos_is_in(uint8_t pos) {
     if (alive == 0) {
@@ -65,7 +66,10 @@ struct Guidance {
   // 0x000000FF for cluster_size, 0x0000FF00 for alive_num
   uint32_t cluster_size:8;
   uint32_t alive_num:8;
+  uint32_t __padding:16;
   NodeStatus cluster[ReplicaNumbers];
+
+  Guidance(): __padding(0) {}
 
   int map_node_id(uint8_t pos) {
     for (int id = 0; id < ReplicaNumbers; id++) {
