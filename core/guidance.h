@@ -2,12 +2,14 @@
 #define __CORE_GUIDANCE_H__
 
 #include <cstdint>
-#include <stdio.h>
-#include <msgpack.hpp>
+#include <sstream>
+#include <iomanip>
 
-#ifndef HARD_CODE_REPLICAS
-#define HARD_CODE_REPLICAS 3
+#ifndef CONFIG_HARD_CODE_REPLICAS
+#define CONFIG_HARD_CODE_REPLICAS 3
 #endif
+
+constexpr int ReplicaNumbers = CONFIG_HARD_CODE_REPLICAS;
 
 constexpr uint32_t guidance_mask_alive = 0xFF;
 constexpr uint32_t guidance_offset_cluster = 8;
@@ -28,36 +30,18 @@ struct NodeStatus {
     0x0000FF00 for end_key_pos
     0x00FF0000 for alive and other flags
   */
-  uint32_t status = 0;
-  MSGPACK_DEFINE(status);
+  uint32_t start_pos:8;
+  uint32_t end_pos:8;
+  uint32_t alive:8;
 
-  uint8_t get_start_pos() {
-    return status & node_status_mask_start;
-  }
-  uint8_t get_end_pos() {
-    return (status & node_status_mask_end) >> node_status_offset_end;
-  }
-  uint8_t alive() {
-    return (status & node_status_mask_flags) >> node_status_offset_flags;
-  }
-  void set_pos(uint8_t start, uint8_t end) {
-    uint16_t pos = start | (end << node_status_offset_end);
-    status &= 0xFFFF0000;
-    status |= pos;
-  }
-  void set_alive() {
-    status &= 0x0000FFFF;
-    status |= 0x00010000;
-  }
-  void set_dead() {
-    status &= 0x0000FFFF;
-  }
+  NodeStatus(): start_pos(0), end_pos(0), alive(0) {}
+
   bool pos_is_in(uint8_t pos) {
-    if (!alive()) {
+    if (alive == 0) {
       return false;
     }
-    auto start = get_start_pos();
-    auto end = get_end_pos();
+    uint8_t start = start_pos;
+    uint8_t end = end_pos;
     if (start > end) {
       if (start <= pos) {
         return true;
@@ -75,45 +59,40 @@ struct NodeStatus {
 };
 
 struct Guidance {
-  uint64_t epoch = 0;
+  uint64_t term = 0;
   // uint8_t alive_num;
   // uint8_t cluster_size;
-  uint32_t status = 0; // 0x0000FF00 for cluster_size, 0x000000FF for alive_num
-  NodeStatus cluster[HARD_CODE_REPLICAS];
-  MSGPACK_DEFINE(epoch, status, cluster);
-  uint8_t get_cluster_size() {
-    return (status & 0xFF00) >> 8;
-  }
-  uint8_t get_alive_num() {
-    return status & 0xFF;
-  }
-  void set_cluster_size(uint8_t size) {
-    status &= 0x00FF;
-    status |= (size << 8);
-  }
-  void set_alive_num(uint8_t num) {
-    status &= 0xFF00;
-    status |= num;
-  }
+  // 0x000000FF for cluster_size, 0x0000FF00 for alive_num
+  uint32_t cluster_size:8;
+  uint32_t alive_num:8;
+  NodeStatus cluster[ReplicaNumbers];
+
   int map_node_id(uint8_t pos) {
-    for (int id = 0; id < HARD_CODE_REPLICAS; id++) {
+    for (int id = 0; id < ReplicaNumbers; id++) {
       if (cluster[id].pos_is_in(pos)) {
         return id;
       }
     }
     return -1;
   }
+
+  std::string to_string() {
+    std::stringstream ss;
+    ss << "term: " << term << ", "
+       << "cluster size: " << cluster_size << ", "
+       << "alive: " << alive_num << std::endl;
+
+    for (int i = 0; i < ReplicaNumbers; i++) {
+      ss << "id: " << i << ", "
+         << "status: 0x" << std::setfill('0') << std::setw(8) << std::hex
+         << *reinterpret_cast<uint32_t *>(&cluster[i]) << "; ";
+    }
+
+    return std::move(ss.str());
+  }
 };
 
-inline void debug_print_guidance(Guidance *g) {
-  printf("g at %p, size: %zu\n", g, sizeof(Guidance));
-  printf("status at: %p, %p and %p\n", &g->cluster[0], &g->cluster[1],
-         &g->cluster[2]);
-  printf("epoch: %zu, status: 0x%08x\n", g->epoch, g->status);
-  for (int i = 0; i < 3; i++) {
-    printf("i = %d, node status: 0x%08x\n", i, g->cluster[i].status);
-  }
-}
+
 
 
 #endif //__CORE_GUIDANCE_H__

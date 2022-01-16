@@ -37,7 +37,7 @@ TEST(SMRLogTest, TruncateTest) {
   SMRLog smr_log;
   EXPECT_EQ(smr_log.last_index(), 0);
   for (size_t i = 0; i < log_size; i++) {
-    auto idx = smr_log.append(test_entries[i]);
+    smr_log.append(test_entries[i]);
   }
 
   smr_log.truncate(3);
@@ -63,7 +63,7 @@ TEST(SMRLogTest, CommitTest) {
   EXPECT_EQ(smr_log.curr_commit(), 0);
 
   for (size_t i = 0; i < log_size; i++) {
-    auto idx = smr_log.append(test_entries[i]);
+    smr_log.append(test_entries[i]);
   }
 
   auto res = smr_log.commit_to(2);

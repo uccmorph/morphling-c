@@ -1,5 +1,6 @@
 
 #include <loguru.hpp>
+
 #include "morphling.h"
 
 int calc_key_pos(uint64_t key_hash) {
@@ -10,74 +11,83 @@ Morphling::Morphling(int id, std::vector<int> &peers)
     : m_me(id), m_peers(peers) {
   Morphling::init_local_guidance();
   m_storage.reserve(1000);
-  SMRMessageCallback cb{
-      .notify_send_append_entry = [this](GenericMessage &&msg) -> bool {
-        this->m_next_msgs.push_back(msg);
-        return true;
-      },
-      .notify_send_append_entry_reply = [this](GenericMessage &&msg) -> bool {
-        this->m_next_msgs.push_back(msg);
-        return true;
-      },
-      .notify_apply = [this](std::vector<Entry> entries) -> bool {
-        for (auto &item : entries) {
-          this->m_apply_entries.push_back(item);
-        }
-        return true;
-      }};
+
+  message_cb_t<AppendEntriesMessage> ae_cb = [this](AppendEntriesMessage &msg, int to) -> bool {
+    auto &trans = get_peer_trans(to);
+    trans->send(msg);
+    return true;
+  };
+  message_cb_t<AppendEntriesReplyMessage> aer_cb = [this](AppendEntriesReplyMessage &msg, int to) -> bool {
+    auto &trans = get_peer_trans(to);
+    trans->send(msg);
+    return true;
+  };
+  apply_cb_t apply_cb = [this](SMRLog &log, size_t start, size_t end) -> bool {
+    for (size_t idx = start; idx <= end; idx++) {
+      Entry &e = log.entry_at(idx);
+      auto op = Morphling::parse_operation(e.data);
+      uint8_t *reply_buf;
+      size_t reply_buf_size = 0;
+      if (op->op_type == 0) {
+        auto &value = Morphling::m_storage[op->key_hash];
+        reply_buf_size = sizeof(ClientReplyRawMessage) + value.size();
+        reply_buf = new uint8_t[reply_buf_size];
+
+        size_t data_offset = sizeof(ClientReplyRawMessage);
+        std::copy(value.begin(), value.end(), reply_buf + data_offset);
+      } else {
+        reply_buf = new uint8_t[reply_buf_size];
+        reply_buf_size = sizeof(ClientReplyRawMessage);
+
+        m_storage[op->key_hash] = op->data;
+      }
+      ClientReplyRawMessage *reply = reinterpret_cast<ClientReplyRawMessage *>(reply_buf);
+      reply->from = Morphling::m_me;
+      reply->success = true;
+      memcpy(&reply->guidance, &(Morphling::m_guide), sizeof(Guidance));
+      reply->key_hash = op->key_hash;
+
+      auto &trans = Morphling::m_client_pendings[idx];
+      trans->send(reply_buf, reply_buf_size);
+    }
+    return true;
+  };
   // alloc enough space, so m_smrs won't automatically grow, and won't use move constructor
   m_smrs.reserve(DEFAULT_KEY_SPACE);
   for (int i = 0; i < DEFAULT_KEY_SPACE; i++) {
-    // SMR smr(id, m_peers);
     auto &smr = m_smrs.emplace_back(id, m_peers);
     smr.set_gid(i);
-    smr.set_cb(cb);
+    smr.set_term(m_guide.term);
+    smr.set_cb(ae_cb, aer_cb, apply_cb);
   }
 }
 
 Morphling::~Morphling() {}
 
-#if 0
 void Morphling::init_local_guidance(int key_space) {
-  m_guide.epoch = 1;
-  if (m_peers.size() != HARD_CODE_REPLICAS) {
+  m_guide.term = 1;
+  if (m_peers.size() != ReplicaNumbers) {
     LOG_F(ERROR, "peers size %zu should be equal to %d", m_peers.size(),
-          HARD_CODE_REPLICAS);
-    exit(-1);
-  }
-  m_guide.alive_num = m_peers.size();
-  m_guide.cluster_size = m_peers.size();
-  for (int i = 0; i < m_guide.cluster_size; i++) {
-    m_guide.cluster[i].alive = 0x1;
-    m_guide.cluster[i].start_key_pos = i * key_space / m_guide.cluster_size;
-    m_guide.cluster[i].end_key_pos = (i + 1) * key_space / m_guide.cluster_size;
-  }
-}
-#endif
-
-void Morphling::init_local_guidance(int key_space) {
-  m_guide.epoch = 1;
-  if (m_peers.size() != HARD_CODE_REPLICAS) {
-    LOG_F(ERROR, "peers size %zu should be equal to %d", m_peers.size(),
-          HARD_CODE_REPLICAS);
+          ReplicaNumbers);
     exit(-1);
   }
 
-  uint32_t cluster_size = m_peers.size();
+  int cluster_size = m_peers.size();
 
-  m_guide.set_cluster_size(cluster_size);
-  m_guide.set_alive_num(cluster_size);
+  m_guide.cluster_size = cluster_size;
+  m_guide.alive_num = cluster_size;
 
   for (int i = 0; i < cluster_size; i++) {
     uint32_t start_key_pos = uint32_t(i * key_space) / cluster_size;
     uint32_t end_key_pos = uint32_t((i + 1) * key_space) / cluster_size - 1;
-    m_guide.cluster[i].set_pos(start_key_pos, end_key_pos);
-    m_guide.cluster[i].set_alive();
+    m_guide.cluster[i].start_pos = start_key_pos;
+    m_guide.cluster[i].end_pos = end_key_pos;
+    m_guide.cluster[i].alive = 1;
   }
 }
 
-bool Morphling::is_valid_guidance(uint64_t epoch) {
-  if (m_guide.epoch != epoch) {
+bool Morphling::is_valid_guidance(uint64_t term) {
+  if (m_guide.term != term) {
     return false;
   }
   return true;
@@ -90,19 +100,19 @@ SMR& Morphling::find_target_smr(uint64_t key_hash) {
 }
 
 std::unique_ptr<Operation> Morphling::parse_operation(std::vector<uint8_t> data) {
-  std::string data_str(data.begin(), data.end());
-  auto oh = msgpack::unpack(data_str.data(), data_str.size());
-  auto o = oh.get();
-
   std::unique_ptr<Operation> op = std::make_unique<Operation>();
-  o.convert(*op.get());
+  OperationRaw *op_raw = reinterpret_cast<OperationRaw *>(data.data());
+  op->op_type = op_raw->op_type;
+  op->key_hash = op_raw->key_hash;
+  size_t data_offset = sizeof(OperationRaw);
+  op->data.assign(data.begin() + data_offset, data.end());
 
   return op;
 }
 
-void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> &&trans) {
-  if (!is_valid_guidance(msg.epoch)) {
-    reply_guidance(std::move(trans));
+void Morphling::handle_operation(ClientMessage &msg, TransPtr &trans) {
+  if (!is_valid_guidance(msg.term)) {
+    reply_guidance(trans);
     return;
   }
 
@@ -126,19 +136,20 @@ void Morphling::handle_operation(ClientMessage &msg, std::unique_ptr<Transport> 
 }
 
 void Morphling::handle_append_entries(AppendEntriesMessage &msg, int from) {
-  if (!is_valid_guidance(msg.epoch)) {
-    reply_guidance(from);
+  if (!is_valid_guidance(msg.term)) {
+    reply_guidance(m_network[from]);
     return;
   }
-  LOG_F(INFO, "recv AppendEntriesMessage, index: %zu", msg.entries[0].index);
+  LOG_F(INFO, "recv AppendEntriesMessage, index: %zu", msg.entry.index);
   m_smrs[msg.group_id].handle_append_entries(msg, from);
   prepare_msgs();
 }
 
 
-void Morphling::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int from) {
-  if (!is_valid_guidance(msg.epoch)) {
-    reply_guidance(from);
+void Morphling::handle_append_entries_reply(AppendEntriesReplyMessage &msg, int from) {
+  if (!is_valid_guidance(msg.term)) {
+
+    reply_guidance(m_network[from]);
     return;
   }
   LOG_F(INFO, "recv AppenEntriesReplyMessage, index: %zu", msg.index);
@@ -146,15 +157,7 @@ void Morphling::handle_append_entries_reply(AppenEntriesReplyMessage &msg, int f
   prepare_msgs();
 }
 
-void Morphling::reply_guidance(int id) {
-  GuidanceMessage msg;
-  msg.from = m_me;
-  msg.guide = m_guide;
-  msg.votes = 3;
-  m_next_msgs.push_back(GenericMessage(msg, id));
-}
-
-void Morphling::reply_guidance(std::unique_ptr<Transport> &&trans) {
+void Morphling::reply_guidance(TransPtr &trans) {
   GuidanceMessage msg;
   msg.from = m_me;
   msg.guide = m_guide;
@@ -162,27 +165,7 @@ void Morphling::reply_guidance(std::unique_ptr<Transport> &&trans) {
   trans->send(msg);
 }
 
-bool Morphling::prepare_msgs() {
-  if (m_next_msgs.size() == 0) {
-    return false;
-  }
-  for (auto &msg : m_next_msgs) {
-    switch (msg.type) {
-    case MsgTypeAppend:
-      msg.append_msg.from = m_me;
-      msg.append_msg.epoch = m_guide.epoch;
-      break;
-    case MsgTypeAppendReply:
-      msg.append_reply_msg.from = m_me;
-      msg.append_reply_msg.epoch = m_guide.epoch;
-      break;
-    default:
-      LOG_F(INFO, "why handle msg %d", msg.type);
-    }
-  }
-  return true;
-}
-
+#if 0
 bool Morphling::maybe_apply() {
   for (auto &e : m_apply_entries) {
     auto op = parse_operation(e.data);
@@ -198,44 +181,14 @@ bool Morphling::maybe_apply() {
       reply.reply_data = m_storage[op->key_hash];
     }
 
-    m_client_pendings[e.index]->send(reply);
+    m_client_pendings[e.index].send(reply);
   }
   m_apply_entries.clear();
 }
-
-void Morphling::bcast_msgs(std::unordered_map<int, std::unique_ptr<Transport>> &peers_trans) {
-  if (m_next_msgs.size() == 0) {
-    return;
-  }
-  for (auto &msg : m_next_msgs) {
-    auto &trans = peers_trans[msg.to];
-    // todo:
-
-    switch (msg.type) {
-    case MsgTypeAppend:
-      LOG_F(INFO, "append entry: %s", msg.append_msg.entries[0].debug().c_str());
-      trans->send(msg.append_msg);
-      break;
-    case MsgTypeAppendReply:
-      LOG_F(INFO, "send append result index: %zu", msg.append_reply_msg.index);
-      trans->send(msg.append_reply_msg);
-      break;
-    case MsgTypeGuidance:
-      trans->send(msg.guidance_msg);
-      break;
-    default:
-      LOG_F(INFO, "no need to bcast type %d", msg.type);
-    }
-  }
-  m_next_msgs.clear();
-}
+#endif
 
 Guidance& Morphling::get_guidance() {
   return m_guide;
-}
-
-std::vector<GenericMessage>& Morphling::debug_next_msgs() {
-  return m_next_msgs;
 }
 
 std::vector<Entry>& Morphling::debug_apply_entries() {
