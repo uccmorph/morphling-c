@@ -8,7 +8,11 @@
 
 #include "loguru.hpp"
 
-SMRLog::SMRLog() : m_dummy_entry(0, 0) { m_log.reserve(1000000); }
+SMRLog::SMRLog() {
+  m_dummy_entry.index = 0;
+  m_dummy_entry.term = 0;
+  m_log.reserve(1000000);
+}
 
 uint64_t SMRLog::entry_pos(uint64_t e_index) {
   if (e_index == 0) {
@@ -31,21 +35,30 @@ std::string SMRLog::debug() {
   return std::move(ss.str());
 }
 
-uint64_t SMRLog::append(Entry &e) { return SMRLog::append(e.data, e.term); }
+uint64_t SMRLog::append(Entry &e) { return SMRLog::append(e.data.data(), e.data.size(), e.term); }
 
-uint64_t SMRLog::append(std::vector<uint8_t> &data, uint64_t term) {
-    if (m_log.size() == 0) {
-    auto &new_e = m_log.emplace_back(data);
-    new_e.index = 1;
-    new_e.term = term;
-    return 1;
-  }
-  // caveat: After emplace new data, vector may change its size, resulting a
-  // stale last_e reference see
-  // https://en.cppreference.com/w/cpp/container/vector/emplace_back
-  auto &last_e = m_log.back();
-  auto &new_e = m_log.emplace_back(data);
-  new_e.index = last_e.index + 1;
+// uint64_t SMRLog::append(std::vector<uint8_t> &data, uint64_t term) {
+//     if (m_log.size() == 0) {
+//     auto &new_e = m_log.emplace_back(data);
+//     new_e.index = 1;
+//     new_e.term = term;
+//     return 1;
+//   }
+//   // caveat: After emplace new data, vector may change its size, resulting a
+//   // stale last_e reference see
+//   // https://en.cppreference.com/w/cpp/container/vector/emplace_back
+//   auto &last_e = m_log.back();
+//   auto &new_e = m_log.emplace_back(data);
+//   new_e.index = last_e.index + 1;
+//   new_e.term = term;
+
+//   return new_e.index;
+// }
+
+uint64_t SMRLog::append(uint8_t *data, size_t data_size, uint64_t term) {
+  auto &new_e = m_log.emplace_back(data, data_size);
+  auto new_pos = m_log.size() - 1;
+  new_e.index = m_dummy_entry.index + 1 + new_pos;
   new_e.term = term;
 
   return new_e.index;
@@ -207,7 +220,22 @@ std::tuple<bool, bool> SMR::check_safety(uint64_t prev_term,
 }
 
 uint64_t SMR::handle_operation(ClientMessage &msg) {
-  auto last_idx = m_log.append(msg.op, msg.term);
+  auto last_idx = m_log.append(msg.op.data(), msg.op.size(), msg.term);
+  m_entry_votes.vote(m_me, last_idx);
+  m_prs[m_me].match = last_idx;
+  m_prs[m_me].next = last_idx + 1;
+  for (auto rid : m_peers) {
+    if (rid != m_me) {
+      m_prs[rid].next = last_idx;
+      send_append_entries(rid);
+    }
+  }
+  return last_idx;
+}
+
+uint64_t SMR::handle_operation(ClientRawMessage &msg) {
+  uint8_t *op_buf = msg.get_op_buf();
+  auto last_idx = m_log.append(op_buf, msg.data_size, msg.term);
   m_entry_votes.vote(m_me, last_idx);
   m_prs[m_me].match = last_idx;
   m_prs[m_me].next = last_idx + 1;

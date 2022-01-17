@@ -19,9 +19,18 @@ public:
   }
 };
 
+void print_buffer(uint8_t *buf, size_t size) {
+  uint32_t *tmp = (uint32_t *)buf;
+  for (size_t i = 0; i < size/sizeof(uint32_t); i++) {
+    printf("0x%08x ", tmp[i]);
+  }
+  printf("\n");
+}
+
 TEST(BasicMorphlingTest, ClientOperationTest) {
   std::vector<int> peers{0, 1, 2};
-  Morphling mpreplica(1, peers);
+  int self = 1;
+  Morphling mpreplica(self, peers);
 
   std::string data("hello world!");
   for (auto id : peers) {
@@ -32,39 +41,41 @@ TEST(BasicMorphlingTest, ClientOperationTest) {
   size_t data_size = data.size();
 
   size_t op_size = sizeof(OperationRaw) + data_size;
-  uint8_t *cmsg_buf = new uint8_t[sizeof(ClientRawMessge) + op_size];
-  ClientRawMessge &cmsg = *reinterpret_cast<ClientRawMessge *>(cmsg_buf);
-  cmsg.term = 1;
-  cmsg.key_hash = 0x4199;
-  cmsg.data_size = op_size;
+  uint8_t *cmsg_buf = new uint8_t[sizeof(ClientRawMessage) + op_size];
+  ClientRawMessage &msg_raw = *reinterpret_cast<ClientRawMessage *>(cmsg_buf);
+  msg_raw.header.type = MessageType::MsgTypeClient;
+  msg_raw.header.size = sizeof(ClientRawMessage) + op_size;
+  msg_raw.term = 1;
+  msg_raw.key_hash = 0x4199;
+  msg_raw.data_size = op_size;
 
-  uint8_t *op_buf = cmsg_buf + sizeof(ClientRawMessge);
-  OperationRaw &op = *reinterpret_cast<OperationRaw *>(op_buf);
+  OperationRaw &op = msg_raw.get_op();
   op.op_type = 1;
-  op.key_hash = cmsg.key_hash;
-  op.data_size = data.size();
-  std::copy(data.begin(), data.end(), op_buf + sizeof(OperationRaw));
+  op.key_hash = msg_raw.key_hash;
+  op.value_size = data_size;
+  std::copy(data.begin(), data.end(), op.get_value_buf());
 
-  for (size_t i = 0; i < sizeof(ClientRawMessge) + op_size; i++) {
-    printf("0x%x ", cmsg_buf[i]);
-  }
-  printf("\n");
-
-  ClientMessage msg;
-  msg.term = cmsg.term;
-  msg.key_hash = cmsg.key_hash;
-  msg.op.assign(op_buf, op_buf + op_size);
+  print_buffer(cmsg_buf, sizeof(ClientRawMessage) + op_size);
 
   std::unique_ptr<Transport> trans = std::make_unique<MockTransport>();
-  mpreplica.handle_operation(msg, trans);
+  mpreplica.handle_operation(msg_raw, trans);
 
-  MockTransport *mock_trans = dynamic_cast<MockTransport *>(mpreplica.get_peer_trans(0).get());
-  if (mock_trans == nullptr) {
-    printf("dynamic cast failed\n");
-  }
-  for (auto &raw_msg : mock_trans->sent_msgs) {
-    AppendEntriesRawMessage *msg = (AppendEntriesRawMessage *)raw_msg.data();
-    EXPECT_EQ(msg->from, 1);
-    EXPECT_EQ(msg->term, 1);
+  for (auto id : peers) {
+    if (id == self) {
+      continue;
+    }
+
+    MockTransport *mock_trans = dynamic_cast<MockTransport *>(mpreplica.get_peer_trans(0).get());
+    if (mock_trans == nullptr) {
+      printf("dynamic cast failed\n");
+    }
+    for (auto &raw_msg : mock_trans->sent_msgs) {
+      AppendEntriesRawMessage *msg = (AppendEntriesRawMessage *)raw_msg.data();
+      EXPECT_EQ(msg->from, 1);
+      EXPECT_EQ(msg->term, 1);
+      EXPECT_EQ(msg->entry.index, 1);
+      EXPECT_EQ(msg->entry.get_op().value_size, data_size);
+      print_buffer(msg->entry.get_op().get_value_buf(), msg->entry.get_op().value_size);
+    }
   }
 }

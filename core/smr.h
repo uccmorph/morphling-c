@@ -28,7 +28,8 @@ class SMRLog {
   SMRLog();
 
   uint64_t append(Entry &e);
-  uint64_t append(std::vector<uint8_t> &data, uint64_t term);
+  // uint64_t append(std::vector<uint8_t> &data, uint64_t term);
+  uint64_t append(uint8_t *data, size_t data_size, uint64_t term);
   // truncate including t_idx
   void truncate(uint64_t t_idx);
 
@@ -107,6 +108,7 @@ public:
   void set_term(uint64_t term);
 
   uint64_t handle_operation(ClientMessage &msg);
+  uint64_t handle_operation(ClientRawMessage &msg);
   void handle_append_entries(AppendEntriesMessage &msg, int from);
   void handle_append_entries_reply(AppendEntriesReplyMessage &msg, int from);
 

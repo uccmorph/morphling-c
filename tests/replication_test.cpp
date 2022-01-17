@@ -50,7 +50,9 @@ TEST(ReplicationTest, NewEntryTest) {
 TEST(ReplicationTest, HandelAppendEntryTest) {
   std::vector<AppendEntriesMessage> test_in;
   for (int i = 0; i < 3; i++) {
-    Entry entry(1, i + 1);
+    Entry entry;
+    entry.term = 1;
+    entry.index = i + 1;
     AppendEntriesMessage append_msg{
         .prev_term = uint64_t((i == 0) ? 0 : 1),
         .prev_index = uint64_t(i),

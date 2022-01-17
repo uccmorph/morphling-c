@@ -80,15 +80,15 @@ TEST(SMRLogTest, CommitTest) {
 TEST(SMRLogTest, HeavyAppendTest) {
   size_t log_size = 100000;
   auto test_entries = generate_test_entries(log_size);
-
+  size_t value_size = test_entries[0].data.size();
   SMRLog smr_log;
   EXPECT_EQ(smr_log.entry_at(0).index, 0);
   EXPECT_EQ(smr_log.last_index(), 0);
   for (size_t i = 0; i < log_size; i++) {
     auto idx = smr_log.append(test_entries[i]);
     EXPECT_EQ(smr_log.entry_at(idx).index, i+1);
-
     EXPECT_EQ(smr_log.last_index(), i+1);
+    EXPECT_EQ(smr_log.entry_at(idx).data.size(), value_size);
   }
-  printf("%s\n", smr_log.debug().c_str());
+  // printf("%s\n", smr_log.debug().c_str());
 }

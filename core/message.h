@@ -23,8 +23,27 @@ struct Message {
 };
 
 struct MessageHeader {
+  // 0x00FFFFFF for size, 0xFF000000 for type
   uint32_t size : 24;
   uint32_t type : 8;
+};
+
+// struct Operation {
+//   int op_type;  // 0 for read, 1 for write
+//   uint64_t key_hash;
+//   std::vector<uint8_t> data;
+// };
+
+// pack/unpack helper
+struct OperationRaw {
+  int op_type;  // 0 for read, 1 for write
+  uint64_t key_hash;
+  size_t value_size;
+
+  uint8_t* get_value_buf() {
+    uint8_t *value_buf = reinterpret_cast<uint8_t *>(this);
+    return (value_buf + sizeof(OperationRaw));
+  }
 };
 
 struct EntryRaw {
@@ -32,6 +51,16 @@ struct EntryRaw {
   uint64_t index = 0;
   size_t data_size;
 
+  uint8_t* get_op_buf() {
+    uint8_t *op_buf = reinterpret_cast<uint8_t *>(this);
+    return (op_buf + sizeof(EntryRaw));
+  }
+
+  OperationRaw& get_op() {
+    uint8_t *op_buf = reinterpret_cast<uint8_t *>(this);
+    op_buf += sizeof(EntryRaw);
+    return *reinterpret_cast<OperationRaw *>(op_buf);
+  }
 };
 
 struct Entry {
@@ -39,8 +68,8 @@ struct Entry {
   uint64_t index = 0;
   std::vector<uint8_t> data;
   Entry() {}
-  Entry(uint64_t _epoch, uint64_t _index): term(_epoch), index(_index) {}
   Entry(std::vector<uint8_t> &buf): data(buf.begin(), buf.end()) {}
+  Entry(uint8_t *buf, size_t size): data(buf, buf + size) {}
 
   std::string debug() {
     return "term: " + std::to_string(term) + ", index: " + std::to_string(index) +
@@ -111,32 +140,37 @@ struct AppendEntriesReplyMessage {
   uint64_t index;
 };
 
-struct Operation {
-  int op_type;  // 0 for read, 1 for write
-  uint64_t key_hash;
-  std::vector<uint8_t> data;
-};
-
-// pack/unpack helper
-struct OperationRaw {
-  int op_type;  // 0 for read, 1 for write
-  uint64_t key_hash;
-  size_t data_size;
-};
-
 struct ClientMessage {
   // Guidance guidance;
   uint64_t term;
   uint64_t key_hash;
-  std::vector<uint8_t> op;
+  std::vector<uint8_t> op;  // contains full OperationRaw
 };
 
-struct ClientRawMessge {
+struct ClientRawMessage {
   MessageHeader header;
 
   uint64_t term;
   uint64_t key_hash;
   size_t data_size;
+
+  uint8_t* get_op_buf() {
+    uint8_t *op_buf = reinterpret_cast<uint8_t *>(this);
+    return (op_buf + sizeof(ClientRawMessage));
+  }
+
+  OperationRaw& get_op() {
+    uint8_t *op_buf = reinterpret_cast<uint8_t *>(this);
+    op_buf += sizeof(ClientRawMessage);
+    return *reinterpret_cast<OperationRaw *>(op_buf);
+  }
+
+  void copy_data_in(uint8_t *buf, size_t size) {
+    size_t offset = sizeof(ClientRawMessage);
+    uint8_t *body = (uint8_t *)this;
+    memcpy(body + offset, buf, size);
+    assert(data_size == size);
+  }
 };
 
 // struct ClientReplyMessage {

@@ -68,32 +68,16 @@ Morphling::Morphling(int id, std::vector<int> &peers)
   apply_cb_t apply_cb = [this](SMRLog &log, size_t start, size_t end) -> bool {
     for (size_t idx = start; idx <= end; idx++) {
       Entry &e = log.entry_at(idx);
-      auto op = Morphling::parse_operation(e.data);
-      uint8_t *reply_buf;
-      size_t reply_buf_size = 0;
-      if (op->op_type == 0) {
-        auto &value = Morphling::m_storage[op->key_hash];
-        reply_buf_size = sizeof(ClientReplyRawMessage) + value.size();
-        reply_buf = new uint8_t[reply_buf_size];
+      OperationRaw &op_raw = Morphling::parse_operation(e.data);
 
-        size_t data_offset = sizeof(ClientReplyRawMessage);
-        std::copy(value.begin(), value.end(), reply_buf + data_offset);
-      } else {
-        reply_buf = new uint8_t[reply_buf_size];
-        reply_buf_size = sizeof(ClientReplyRawMessage);
-
-        m_storage[op->key_hash] = op->data;
+      // apply write operation
+      if (op_raw.op_type == 1) {
+        uint8_t *value_buf = op_raw.get_value_buf();
+        m_storage[op_raw.key_hash].reserve(op_raw.value_size);
+        m_storage[op_raw.key_hash].assign(value_buf, value_buf + op_raw.value_size);
       }
-      ClientReplyRawMessage *reply = reinterpret_cast<ClientReplyRawMessage *>(reply_buf);
-      reply->from = Morphling::m_me;
-      reply->success = true;
-      memcpy(&reply->guidance, &(Morphling::m_guide), sizeof(Guidance));
-      reply->key_hash = op->key_hash;
 
-      auto &trans = Morphling::m_client_pendings[idx];
-      trans->send(reply_buf, reply_buf_size);
-
-      delete []reply_buf;
+      Morphling::reply_client(op_raw.op_type, op_raw.key_hash, Morphling::m_client_pendings[idx]);
     }
     return true;
   };
@@ -144,39 +128,50 @@ SMR& Morphling::find_target_smr(uint64_t key_hash) {
   return smr;
 }
 
-std::unique_ptr<Operation> Morphling::parse_operation(std::vector<uint8_t> data) {
-  std::unique_ptr<Operation> op = std::make_unique<Operation>();
-  OperationRaw *op_raw = reinterpret_cast<OperationRaw *>(data.data());
-  op->op_type = op_raw->op_type;
-  op->key_hash = op_raw->key_hash;
-  size_t data_offset = sizeof(OperationRaw);
-  op->data.assign(data.begin() + data_offset, data.end());
+OperationRaw& Morphling::parse_operation(std::vector<uint8_t> &data) {
+  OperationRaw &op_raw = *reinterpret_cast<OperationRaw *>(data.data());
 
-  return op;
+  return op_raw;
 }
 
-void Morphling::handle_operation(ClientMessage &msg, TransPtr &trans) {
+// void Morphling::handle_operation(ClientMessage &msg, TransPtr &trans) {
+//   if (!is_valid_guidance(msg.term)) {
+//     reply_guidance(trans);
+//     return;
+//   }
+
+//   auto op = parse_operation(msg.op);
+//   if (op.op_type == 0) {
+//     auto &value = m_storage[msg.key_hash];
+//     auto raw_reply = Morphling::new_client_reply(0, value.size());
+//     ClientReplyRawMessage &reply = *(raw_reply);
+//     reply.success = true;
+//     reply.guidance = m_guide;
+//     reply.from = m_me;
+//     reply.key_hash = msg.key_hash;
+//     reply.copy_data_in(value.data(), value.size());
+//     LOG_F(3, "reply client read, data size: %zu", value.size());
+
+//     trans->send((uint8_t *)raw_reply, raw_reply->header.size);
+
+//     uint8_t *reply_buf = (uint8_t *)raw_reply;
+//     delete []reply_buf;
+//     return;
+//   }
+
+//   auto new_idx = Morphling::find_target_smr(msg.key_hash).handle_operation(msg);
+//   m_client_pendings[new_idx] = std::move(trans);
+// }
+
+void Morphling::handle_operation(ClientRawMessage &msg, TransPtr &trans) {
   if (!is_valid_guidance(msg.term)) {
     reply_guidance(trans);
     return;
   }
 
-  auto op = parse_operation(msg.op);
-  if (op.get()->op_type == 0) {
-    auto &value = m_storage[msg.key_hash];
-    auto raw_reply = Morphling::new_client_reply(0, value.size());
-    ClientReplyRawMessage &reply = *(raw_reply);
-    reply.success = true;
-    reply.guidance = m_guide;
-    reply.from = m_me;
-    reply.key_hash = msg.key_hash;
-    reply.copy_data_in(value.data(), value.size());
-    LOG_F(3, "reply client read, data size: %zu", value.size());
-
-    trans->send((uint8_t *)raw_reply, raw_reply->header.size);
-
-    uint8_t *reply_buf = (uint8_t *)raw_reply;
-    delete []reply_buf;
+  OperationRaw *op = (OperationRaw *)msg.get_op_buf();
+  if (op->op_type == 0) {
+    reply_client(op->op_type, msg.key_hash, trans);
     return;
   }
 
@@ -212,6 +207,30 @@ void Morphling::reply_guidance(TransPtr &trans) {
   msg.votes = 3;
   msg.guide = m_guide;
   trans->send((uint8_t *)&msg, msg.header.size);
+}
+
+void Morphling::reply_client(int rw_type, uint64_t key_hash, TransPtr &trans) {
+  ClientReplyRawMessage &reply = m_prealloc_cr_msg.to_message();
+
+  if (rw_type == 0) { // for read
+    auto &value = m_storage[key_hash];
+    size_t msg_size = sizeof(ClientReplyRawMessage) + value.size();
+    assert(msg_size < m_prealloc_cr_msg.size);
+
+    reply.header.type = MessageType::MsgTypeClientReply;
+    reply.header.size = msg_size;
+
+    reply.success = true;
+    reply.guidance = m_guide;
+    reply.from = m_me;
+    reply.key_hash = key_hash;
+    reply.copy_data_in(value.data(), value.size());
+    LOG_F(3, "reply client read, data size: %zu", value.size());
+
+    trans->send(m_prealloc_cr_msg.buf, reply.header.size);
+  } else {
+
+  }
 }
 
 #if 0
