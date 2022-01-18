@@ -14,7 +14,8 @@
 class Transport {
 public:
   virtual ~Transport() {};
-  virtual void send(uint8_t *buf, uint64_t size) = 0;
+  virtual void send(uint8_t *send_buf, uint64_t size) = 0;
+  virtual bool recv(uint8_t *recv_buf, uint64_t expect_size) = 0;
   virtual bool is_ready() = 0;
   // virtual void send(MessageType type, uint8_t *payload, uint64_t payload_size) = 0;
   // virtual void send(AppendEntriesMessage &msg) = 0;

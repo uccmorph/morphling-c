@@ -22,6 +22,43 @@ struct Message {
   virtual void deserialize(uint8_t *data, size_t size);
 };
 
+constexpr size_t PreAllocBufferSize = 4096;
+
+// Warning: don't use copy constructor in any way, and be careful when construct it
+// in map or vector.
+template <typename T>
+struct MessageBuffer {
+  uint8_t *buf = nullptr;
+  size_t size = 0;
+
+  MessageBuffer(): buf(new uint8_t[PreAllocBufferSize]), size(PreAllocBufferSize) {}
+
+  MessageBuffer(size_t size): size(size) {
+    buf = new uint8_t[size];
+  }
+
+  ~MessageBuffer() {
+    if (buf != nullptr) {
+      delete []buf;
+      buf = nullptr;
+    }
+  }
+
+  void init(size_t size) {
+    if (buf != nullptr) {
+      delete []buf;
+    }
+    buf = new uint8_t[size];
+  }
+
+  T& to_message() {
+    return *reinterpret_cast<T *>(buf);
+  }
+
+  MessageBuffer(MessageBuffer &obj) = delete;
+  MessageBuffer& operator=(MessageBuffer &obj) = delete;
+};
+
 struct MessageHeader {
   // 0x00FFFFFF for size, 0xFF000000 for type
   uint32_t size : 24;
@@ -89,31 +126,6 @@ struct AppendEntriesRawMessage {
 
   EntryRaw entry;
 
-  void copy_entry_data_in(uint8_t *buf, size_t size) {
-    size_t offset = sizeof(AppendEntriesRawMessage);
-    uint8_t *body = (uint8_t *)this;
-    memcpy(body + offset, buf, size);
-    assert(entry.data_size == size);
-  }
-
-  void copy_entry_data_out(uint8_t *buf, size_t size) {
-    size_t offset = sizeof(AppendEntriesRawMessage);
-    uint8_t *body = (uint8_t *)this;
-    memcpy(buf, body + offset, size);
-    assert(entry.data_size == size);
-  }
-};
-
-struct AppendEntriesMessage {
-  int from = 0;
-  uint64_t term = 0;
-
-  uint64_t prev_term = 0;
-  uint64_t prev_index = 0;
-  uint64_t commit = 0;
-  uint64_t group_id = 0;
-  Entry entry;
-
   std::string debug() {
     std::stringstream ss;
     ss << "from: " << from << ", " <<
@@ -124,11 +136,37 @@ struct AppendEntriesMessage {
     "group_id: " << group_id << "," <<
     "entry index: " << entry.index << ", " <<
     "entry term: " << entry.term << ", " <<
-    "entry data size: " << entry.data.size();
+    "entry data size: " << entry.data_size;
 
     return std::move(ss.str());
   }
 };
+
+// struct AppendEntriesMessage {
+//   int from = 0;
+//   uint64_t term = 0;
+
+//   uint64_t prev_term = 0;
+//   uint64_t prev_index = 0;
+//   uint64_t commit = 0;
+//   uint64_t group_id = 0;
+//   Entry entry;
+
+//   std::string debug() {
+//     std::stringstream ss;
+//     ss << "from: " << from << ", " <<
+//     "term: " << term << ", " <<
+//     "prev_term: " << prev_term << "," <<
+//     "prev_index: " << prev_index << "," <<
+//     "commit: " << commit << "," <<
+//     "group_id: " << group_id << "," <<
+//     "entry index: " << entry.index << ", " <<
+//     "entry term: " << entry.term << ", " <<
+//     "entry data size: " << entry.data.size();
+
+//     return std::move(ss.str());
+//   }
+// };
 
 struct AppendEntriesReplyMessage {
   MessageHeader header;
@@ -140,12 +178,12 @@ struct AppendEntriesReplyMessage {
   uint64_t index;
 };
 
-struct ClientMessage {
-  // Guidance guidance;
-  uint64_t term;
-  uint64_t key_hash;
-  std::vector<uint8_t> op;  // contains full OperationRaw
-};
+// struct ClientMessage {
+//   // Guidance guidance;
+//   uint64_t term;
+//   uint64_t key_hash;
+//   std::vector<uint8_t> op;  // contains full OperationRaw
+// };
 
 struct ClientRawMessage {
   MessageHeader header;
@@ -163,13 +201,6 @@ struct ClientRawMessage {
     uint8_t *op_buf = reinterpret_cast<uint8_t *>(this);
     op_buf += sizeof(ClientRawMessage);
     return *reinterpret_cast<OperationRaw *>(op_buf);
-  }
-
-  void copy_data_in(uint8_t *buf, size_t size) {
-    size_t offset = sizeof(ClientRawMessage);
-    uint8_t *body = (uint8_t *)this;
-    memcpy(body + offset, buf, size);
-    assert(data_size == size);
   }
 };
 
@@ -190,18 +221,9 @@ struct ClientReplyRawMessage {
   uint64_t key_hash;
   size_t data_size;
 
-  void copy_data_in(uint8_t *buf, size_t size) {
-    size_t offset = sizeof(ClientReplyRawMessage);
-    uint8_t *body = (uint8_t *)this;
-    memcpy(body + offset, buf, size);
-    assert(data_size == size);
-  }
-
-  void copy_data_out(uint8_t *buf, size_t size) {
-    size_t offset = sizeof(ClientReplyRawMessage);
-    uint8_t *body = (uint8_t *)this;
-    memcpy(buf, body + offset, size);
-    assert(data_size == size);
+  uint8_t* get_value_buf() {
+    uint8_t *value_buf = reinterpret_cast<uint8_t *>(this);
+    return (value_buf + sizeof(ClientReplyRawMessage));
   }
 };
 

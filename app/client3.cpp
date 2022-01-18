@@ -12,16 +12,16 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <loguru.hpp>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
-#include <atomic>
-#include <map>
 
 #include "message.h"
-#include "smr.h"
 #include "morphling.h"
+#include "smr.h"
 #include "utils.h"
 
 // each thread runs 1 client, for simplicity
@@ -46,14 +46,10 @@ void handle_ur_reply(evutil_socket_t fd, short what, void *arg);
 bool parse_cmd(int argc, char **argv) {
   int has_default = 0;
   static struct option long_options[] = {
-      {"total", required_argument, nullptr, 0},
-      {"group", required_argument, nullptr, 0},
-      {"replicas", required_argument, nullptr, 0},
-      {"ro", no_argument, &has_default, 0},
-      {"vs", required_argument, nullptr, 0},
-      {"nums", required_argument, nullptr, 0},
-      {"ur", no_argument, &has_default, 0},
-      {0, 0, 0, 0}};
+      {"total", required_argument, nullptr, 0},    {"group", required_argument, nullptr, 0},
+      {"replicas", required_argument, nullptr, 0}, {"ro", no_argument, &has_default, 0},
+      {"vs", required_argument, nullptr, 0},       {"nums", required_argument, nullptr, 0},
+      {"ur", no_argument, &has_default, 0},        {0, 0, 0, 0}};
 
   int c = 0;
   bool fail = false;
@@ -132,13 +128,13 @@ class Channel {
   int fd;
   sockaddr_in udp_dest;
 
-public:
+ public:
   Client *client;
 
-public:
+ public:
   void build_event();
 
-  MessageType recv(uint8_t *buf, size_t &size);
+  MessageHeader recv(uint8_t *buf, size_t max_size);
   void send(uint8_t *buf, size_t size);
 };
 
@@ -171,20 +167,16 @@ class Client {
 
  public:
   Client(event_base *base) : m_ev_base(base) {}
-  void set_id(int id) {
-    m_id = id;
-  }
+  void set_id(int id) { m_id = id; }
 
-  int get_id() {
-    return m_id;
-  }
+  int get_id() { return m_id; }
 
   void set_data(uint8_t *d, size_t size) {
     m_data = d;
     m_data_size = size;
   }
 
-  void set_channel_info(std::vector<std::string> ips, std::vector <int> ports) {
+  void set_channel_info(std::vector<std::string> ips, std::vector<int> ports) {
     max_replica_id = (int)cfg_replica_port.size();
     quorum = max_replica_id / 2 + 1;
     m_channel.resize(ips.size());
@@ -214,9 +206,7 @@ class Client {
     return false;
   }
 
-  bool has_finish_all() {
-    return finish_all_msg;
-  }
+  bool has_finish_all() { return finish_all_msg; }
 
   void set_guidance(int id, Guidance &guide) {
     LOG_F(INFO, "set new guidance of replica: %d", id);
@@ -226,26 +216,25 @@ class Client {
   }
 
   bool check_guidance_quorum() {
-    if (m_leading_guidance.epoch == 0) {
+    if (m_leading_guidance.term == 0) {
       LOG_F(WARNING, "client %d doesn't have leading guidance", m_id);
       return false;
     }
-    std::map<uint64_t, int> epoch_votes;
+    std::map<uint64_t, int> term_votes;
     for (auto &guide : m_one_turn_collection) {
-      epoch_votes[guide.epoch] += 1;
-      LOG_F(INFO, "add 1 vote to epoch %zu, curr votes: %d", guide.epoch,
-            epoch_votes[guide.epoch]);
+      term_votes[guide.term] += 1;
+      LOG_F(INFO, "add 1 vote to term %zu, curr votes: %d", guide.term, term_votes[guide.term]);
     }
-    auto vote = epoch_votes.rbegin();
+    auto vote = term_votes.rbegin();
     if ((*vote).first == 0) {
       return false;
     }
-    if (m_leading_guidance.epoch < (*vote).first) {
-      LOG_F(WARNING, "leading epoch %zu is smaller than other replica's %zu",
-            m_leading_guidance.epoch, (*vote).first);
+    if (m_leading_guidance.term < (*vote).first) {
+      LOG_F(WARNING, "leading term %zu is smaller than other replica's %zu",
+            m_leading_guidance.term, (*vote).first);
       return false;
     }
-    if (m_leading_guidance.epoch > (*vote).first) {
+    if (m_leading_guidance.term > (*vote).first) {
       LOG_F(WARNING, "other replicas not reply proper guidance");
       return false;
     }
@@ -257,12 +246,12 @@ class Client {
   }
 
   bool has_uniform_guidance() {
-    uint64_t fe = m_one_turn_collection[0].epoch;
+    uint64_t fe = m_one_turn_collection[0].term;
     if (fe == 0) {
       return false;
     }
     for (auto &guide : m_one_turn_collection) {
-      if (guide.epoch != fe) {
+      if (guide.term != fe) {
         return false;
       }
     }
@@ -273,15 +262,15 @@ class Client {
     uint64_t max = 0;
     int max_idx = 0;
     for (size_t i = 0; i < m_one_turn_collection.size(); i++) {
-      if (m_one_turn_collection[i].epoch > max) {
-        max = m_one_turn_collection[i].epoch;
+      if (m_one_turn_collection[i].term > max) {
+        max = m_one_turn_collection[i].term;
         max_idx = i;
       }
     }
 
     int count = 0;
     for (size_t i = 0; i < m_one_turn_collection.size(); i++) {
-      if (m_one_turn_collection[i].epoch == max) {
+      if (m_one_turn_collection[i].term == max) {
         count += 1;
       }
     }
@@ -297,9 +286,7 @@ class Client {
     m_one_turn_collection.resize(max_replica_id);
   }
 
-  Guidance& peek_local_guidance() {
-    return m_leading_guidance;
-  }
+  Guidance &peek_local_guidance() { return m_leading_guidance; }
 
   void build_comm();
   void request_guidance(int id);
@@ -321,18 +308,18 @@ void Channel::build_event() {
   event_add(ev, nullptr);
 }
 
-MessageType Channel::recv(uint8_t *buf, size_t &size) {
+MessageHeader Channel::recv(uint8_t *buf, size_t max_size) {
   MessageHeader header;
   uint8_t *header_tmp = reinterpret_cast<uint8_t *>(&header);
   socklen_t addr_len = sizeof(udp_dest);
   int read_n = recvfrom(fd, header_tmp, sizeof(header), MSG_PEEK, (sockaddr *)&udp_dest, &addr_len);
   assert(read_n == (int)sizeof(header));
+  assert(header.size < max_size);
 
-  size = sizeof(header) + header.size;
-  read_n = recvfrom(fd, buf, size, 0, (sockaddr *)&udp_dest, &addr_len);
-  assert(read_n == (int)size);
+  read_n = recvfrom(fd, buf, header.size, 0, (sockaddr *)&udp_dest, &addr_len);
+  assert(read_n == (int)header.size);
 
-  return (MessageType)header.type;
+  return header;
 }
 
 void Channel::send(uint8_t *buf, size_t size) {
@@ -341,6 +328,25 @@ void Channel::send(uint8_t *buf, size_t size) {
 }
 
 /* --------------- Client --------------- */
+
+ClientRawMessage &construct_client_message(uint8_t *c_buf, int type, uint8_t *value,
+                                           size_t value_size) {
+  size_t op_size = (type == 0) ? sizeof(OperationRaw) : sizeof(OperationRaw) + value_size;
+  ClientRawMessage &msg_raw = *reinterpret_cast<ClientRawMessage *>(c_buf);
+  msg_raw.header.type = MessageType::MsgTypeClient;
+  msg_raw.header.size = sizeof(ClientRawMessage) + op_size;
+  msg_raw.term = 1;
+  msg_raw.key_hash = 0x4199;
+  msg_raw.data_size = op_size;
+
+  OperationRaw &op = msg_raw.get_op();
+  op.op_type = type;
+  op.key_hash = msg_raw.key_hash;
+  op.value_size = (type == 0) ? 0 : value_size;
+  std::copy(value, value + value_size, op.get_value_buf());
+
+  return msg_raw;
+}
 
 void Client::one_send() {
   if (status != status_t::idle) {
@@ -355,39 +361,27 @@ void Client::one_send() {
   gauge->set_probe1();
 
 #if 1
-  Operation op{
-      .op_type = cfg_is_read ? 0 : 1,
-      .key_hash = 0x5499,
-  };
-  if (op.op_type == 1) {
-    op.data.resize(m_data_size);
-    LOG_F(INFO, "m_data at %p", m_data);
-    std::copy(m_data, m_data + m_data_size, op.data.begin());
-  }
-  ClientMessage msg{
-      .epoch = 1,
-      .key_hash = 0x5499,
-  };
-  size_t total_size = 0;
-  pack_operation(op, msg, buf, total_size);
+  ClientRawMessage &msg =
+      construct_client_message(buf, cfg_is_read ? 0 : 1, g_value, cfg_value_size);
+  OperationRaw &op = msg.get_op();
+  assert(msg.header.size < 2048);
 
   // send operation to replicable node
   int rid = m_leading_guidance.map_node_id(calc_key_pos(msg.key_hash));
   if (rid == -1) {
-    LOG_F(FATAL, "don't have replicable node for key 0x%lx, pos: 0x%x",
-          msg.key_hash, calc_key_pos(msg.key_hash));
+    LOG_F(FATAL, "don't have replicable node for key 0x%lx, pos: 0x%x", msg.key_hash,
+          calc_key_pos(msg.key_hash));
   }
-  LOG_F(INFO, "client %d send operation %d to replica %d, pos 0x%x, size: %zu", m_id,
-        op.op_type, rid, calc_key_pos(msg.key_hash), total_size);
+  LOG_F(INFO, "client %d send operation %d to replica %d, pos 0x%x, size: %u", m_id, op.op_type,
+        rid, calc_key_pos(msg.key_hash), msg.header.size);
 
-  m_channel[rid].send(buf, total_size);
+  m_channel[rid].send(buf, msg.header.size);
 #endif
 
   if (cfg_unreplicated_read) {
     status = status_t::reading;
   } else {
     if (op.op_type == 0) {
-      // m_is_reading = true;
       status = status_t::reading;
       for (int id = 0; id < max_replica_id; id++) {
         if (id == rid) {
@@ -403,10 +397,12 @@ void Client::one_send() {
 
 void Client::request_guidance(int id) {
   LOG_F(INFO, "send get_guidance to replica %d", id);
-  uint8_t buf[64];
-  size_t msg_size;
-  pack_get_guiddance(buf, msg_size);
-  m_channel[id].send(buf, msg_size);
+  MessageHeader header;
+  header.type = MessageType::MsgTypeGetGuidance;
+  header.size = sizeof(MessageHeader);
+
+  uint8_t *buf = (uint8_t *)&header;
+  m_channel[id].send(buf, header.size);
   // need to handle and add on reply later.
 }
 
@@ -430,9 +426,7 @@ void Client::handle_reply(Channel *chan, int type, uint8_t *msg_buf, size_t msg_
     }
   } else if (type == MsgTypeClientReply) {
     LOG_F(INFO, "===== client %d status %d receive new MsgTypeClientReply =====", m_id, status);
-    ClientReplyMessage msg;
-    auto oh = msgpack::unpack((char *)msg_buf, msg_size);
-    oh.get().convert(msg);
+    ClientReplyRawMessage &msg = *reinterpret_cast<ClientReplyRawMessage *>(msg_buf);
 
     if (status == Client::status_t::reading) {
       set_guidance(chan->replica_id, msg.guidance);
@@ -448,32 +442,26 @@ void Client::handle_reply(Channel *chan, int type, uint8_t *msg_buf, size_t msg_
       gauge->set_probe2();
       gauge->instant_time_us();
     }
-    LOG_F(INFO, "status: %d, success: %d, data size: %zu", status, msg.success, msg.reply_data.size());
+    LOG_F(INFO, "status: %d, success: %d, data size: %zu", status, msg.success, msg.data_size);
   } else {
     LOG_F(ERROR, "type: %d not a client message", type);
   }
 }
 
-void Client::handle_ur_reply(Channel *chan, int type, uint8_t *msg_buf,
-                             size_t msg_size) {
+void Client::handle_ur_reply(Channel *chan, int type, uint8_t *msg_buf, size_t msg_size) {
   if (type == MsgTypeGuidance) {
     GuidanceMessage *msg = (GuidanceMessage *)msg_buf;
     set_guidance(chan->replica_id, msg->guide);
   } else if (type == MsgTypeClientReply) {
-    LOG_F(INFO,
-          "===== client %d status %d receive new MsgTypeClientReply =====",
-          m_id, status);
-    ClientReplyMessage msg;
-    auto oh = msgpack::unpack((char *)msg_buf, msg_size);
-    oh.get().convert(msg);
+    LOG_F(INFO, "===== client %d status %d receive new MsgTypeClientReply =====", m_id, status);
+    ClientReplyRawMessage &msg = *reinterpret_cast<ClientReplyRawMessage *>(msg_buf);
 
     if (status == Client::status_t::reading) {
       status = Client::status_t::idle;
     } else if (status == Client::status_t::writing) {
       LOG_F(ERROR, "unreplicated read won't have writing");
     }
-    LOG_F(INFO, "status: %d, success: %d, data size: %zu", status, msg.success,
-          msg.reply_data.size());
+    LOG_F(INFO, "status: %d, success: %d, data size: %zu", status, msg.success, msg.data_size);
   } else {
     LOG_F(ERROR, "type: %d not a client message", type);
   }
@@ -487,28 +475,25 @@ void handle_reply(evutil_socket_t fd, short what, void *arg) {
   }
   Channel *chan = (Channel *)arg;
   uint8_t buf[2048];
-  size_t msg_size;
-  auto type = chan->recv(buf, msg_size);
 
-  uint8_t *tmp = buf + sizeof(MessageHeader);
-  msg_size -= sizeof(MessageHeader);
-  chan->client->handle_reply(chan, type, tmp, msg_size);
+  auto header = chan->recv(buf, 2048);
+  chan->client->handle_reply(chan, header.type, buf, header.size);
 }
 
 void handle_ur_reply(evutil_socket_t fd, short what, void *arg) {
+  if ((what & EV_READ) == 0) {
+    LOG_F(FATAL, "should have a read event");
+  }
   Channel *chan = (Channel *)arg;
   uint8_t buf[2048];
-  size_t msg_size;
-  auto type = chan->recv(buf, msg_size);
 
-  uint8_t *tmp = buf + sizeof(MessageHeader);
-  msg_size -= sizeof(MessageHeader);
-  chan->client->handle_ur_reply(chan, type, tmp, msg_size);
+  auto header = chan->recv(buf, 2048);
+  chan->client->handle_ur_reply(chan, header.type, buf, header.size);
 }
 
 /* --------------- multi-thread --------------- */
 
-Client* one_ready_client(std::vector<Client> &clients) {
+Client *one_ready_client(std::vector<Client> &clients) {
   for (auto &c : clients) {
     if (c.status == Client::status_t::idle) {
       return &c;
@@ -593,8 +578,7 @@ void thread_run(int tid) {
     auto res = event_base_loop(base, EVLOOP_ONCE);
     LOG_F(INFO, "finish one loop");
     if (res == -1) {
-      LOG_F(ERROR, "exit event loop with error. code %d. %s", errno,
-            std::strerror(errno));
+      LOG_F(ERROR, "exit event loop with error. code %d. %s", errno, std::strerror(errno));
       break;
     }
     if (res == 1) {
@@ -642,5 +626,4 @@ int main(int argc, char **argv) {
 
   gauge.set_probe2();
   gauge.total_time_ms(cfg_msg_nums);
-
 }

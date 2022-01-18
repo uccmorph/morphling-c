@@ -16,11 +16,6 @@
 #include "message.h"
 
 void parse_addr(const char *cmd_arg, std::vector<std::string> &peers_addr);
-void pack_operation(Operation &op, ClientMessage &msg, uint8_t *dest, size_t &size);
-void pack_get_guiddance(uint8_t *dest, size_t &size);
-void full_read(struct bufferevent *bev, uint8_t *buf, size_t size);
-void drain_read(struct bufferevent *bev, uint8_t *buf, size_t size);
-MessageType recv_msg(struct bufferevent *bev, uint8_t *buf, size_t &size);
 
 class Gauge {
   std::vector<std::chrono::steady_clock::time_point> measure_probe1;

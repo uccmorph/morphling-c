@@ -71,6 +71,8 @@ using message_cb_t = std::function<bool(T &msg, int to)>;
 
 using apply_cb_t = std::function<bool(SMRLog &log, size_t start, size_t end)>;
 
+using ae_cb_t = std::function<AppendEntriesRawMessage&(int id)>;
+
 struct PeerStatus {
   uint64_t match;
   uint64_t next;
@@ -86,31 +88,34 @@ class SMR {
   // SMRMessageCallback m_cb;
   std::unordered_map<int, PeerStatus> m_prs;
 
-  message_cb_t<AppendEntriesMessage> notify_send_append_entry = nullptr;
+  message_cb_t<AppendEntriesRawMessage> notify_send_append_entry = nullptr;
   message_cb_t<AppendEntriesReplyMessage> notify_send_append_entry_reply = nullptr;
   apply_cb_t notify_apply = nullptr;
 
-  std::unordered_map<int, AppendEntriesMessage> m_prealloc_aes;
+  ae_cb_t pre_alloc_ae = nullptr;
+  // std::unordered_map<int, AppendEntriesMessage> m_prealloc_aes;
 
   // @return <is_safe, is_stale>
   std::tuple<bool, bool> check_safety(uint64_t prev_term, uint64_t prev_index);
-  void handle_stale_entries(AppendEntriesMessage &msg);
+  // void handle_stale_entries(AppendEntriesMessage &msg);
   void init();
 
 public:
   SMR(int me, std::vector<int> &peers);
   // SMR(int me, std::vector<int> &peers, SMRMessageCallback cb);
   SMR(SMR &&smr);
-  void set_cb(message_cb_t<AppendEntriesMessage> ae_cb,
+  void set_cb(message_cb_t<AppendEntriesRawMessage> ae_cb,
               message_cb_t<AppendEntriesReplyMessage> aer_cb,
               apply_cb_t apply_cb);
+  void set_pre_alloc_ae_cb(ae_cb_t ae_cb);
   void set_gid(uint64_t gid);
   void set_term(uint64_t term);
 
-  uint64_t handle_operation(ClientMessage &msg);
+  // uint64_t handle_operation(ClientMessage &msg);
   uint64_t handle_operation(ClientRawMessage &msg);
-  void handle_append_entries(AppendEntriesMessage &msg, int from);
-  void handle_append_entries_reply(AppendEntriesReplyMessage &msg, int from);
+  // void handle_append_entries(AppendEntriesMessage &msg);
+  void handle_append_entries(AppendEntriesRawMessage &msg, AppendEntriesReplyMessage &reply);
+  void handle_append_entries_reply(AppendEntriesReplyMessage &msg);
 
   void send_append_entries(int to);
   void send_append_entries_reply(AppendEntriesReplyMessage &reply, int to);

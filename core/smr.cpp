@@ -177,12 +177,16 @@ SMR::SMR(SMR &&smr) : m_peers(smr.m_peers) {
   SMR::init();
 }
 
-void SMR::set_cb(message_cb_t<AppendEntriesMessage> ae_cb,
+void SMR::set_cb(message_cb_t<AppendEntriesRawMessage> ae_cb,
                  message_cb_t<AppendEntriesReplyMessage> aer_cb,
                  apply_cb_t apply_cb) {
   SMR::notify_send_append_entry = ae_cb;
   SMR::notify_send_append_entry_reply = aer_cb;
   SMR::notify_apply = apply_cb;
+}
+
+void SMR::set_pre_alloc_ae_cb(ae_cb_t ae_cb) {
+  pre_alloc_ae = ae_cb;
 }
 
 void SMR::set_gid(uint64_t gid) { m_gid = gid; }
@@ -193,8 +197,8 @@ void SMR::init() {
   m_entry_votes.init(m_peers.size());
   for (auto id : m_peers) {
     m_prs[id] = PeerStatus{0, 0};
-    m_prealloc_aes[id] = AppendEntriesMessage();
-    m_prealloc_aes[id].entry.data.reserve(4096);
+    // m_prealloc_aes[id] = AppendEntriesMessage();
+    // m_prealloc_aes[id].entry.data.reserve(4096);
   }
 }
 
@@ -219,23 +223,24 @@ std::tuple<bool, bool> SMR::check_safety(uint64_t prev_term,
   return std::make_tuple(false, false);
 }
 
-uint64_t SMR::handle_operation(ClientMessage &msg) {
-  auto last_idx = m_log.append(msg.op.data(), msg.op.size(), msg.term);
-  m_entry_votes.vote(m_me, last_idx);
-  m_prs[m_me].match = last_idx;
-  m_prs[m_me].next = last_idx + 1;
-  for (auto rid : m_peers) {
-    if (rid != m_me) {
-      m_prs[rid].next = last_idx;
-      send_append_entries(rid);
-    }
-  }
-  return last_idx;
-}
+// uint64_t SMR::handle_operation(ClientMessage &msg) {
+//   auto last_idx = m_log.append(msg.op.data(), msg.op.size(), msg.term);
+//   m_entry_votes.vote(m_me, last_idx);
+//   m_prs[m_me].match = last_idx;
+//   m_prs[m_me].next = last_idx + 1;
+//   for (auto rid : m_peers) {
+//     if (rid != m_me) {
+//       m_prs[rid].next = last_idx;
+//       send_append_entries(rid);
+//     }
+//   }
+//   return last_idx;
+// }
 
 uint64_t SMR::handle_operation(ClientRawMessage &msg) {
   uint8_t *op_buf = msg.get_op_buf();
-  auto last_idx = m_log.append(op_buf, msg.data_size, msg.term);
+  auto last_idx = m_log.append(op_buf, msg.data_size, m_term);
+
   m_entry_votes.vote(m_me, last_idx);
   m_prs[m_me].match = last_idx;
   m_prs[m_me].next = last_idx + 1;
@@ -248,9 +253,31 @@ uint64_t SMR::handle_operation(ClientRawMessage &msg) {
   return last_idx;
 }
 
-void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
-  AppendEntriesReplyMessage reply;
+// void SMR::handle_append_entries(AppendEntriesMessage &msg) {
+//   AppendEntriesReplyMessage reply;
 
+//   auto [safe, stale] = check_safety(msg.prev_term, msg.prev_index);
+//   if (!safe) {
+//     reply.success = false;
+//     LOG_F(ERROR, "This AppendEntriesMessage is not safe");
+//   } else {
+//     reply.success = true;
+//     if (stale) {
+//       // just ignore, since only one entry
+//     } else {
+//       m_log.append(msg.entry);
+//     }
+//     if (msg.commit > m_log.curr_commit()) {
+//       uint64_t new_commit = std::min(msg.commit, m_log.last_index());
+//       LOG_F(3, "passive commit to %zu\n", new_commit);
+//       m_log.commit_to(new_commit);
+//     }
+//   }
+//   reply.index = m_log.last_index();
+//   send_append_entries_reply(reply, msg.from);
+// }
+
+void SMR::handle_append_entries(AppendEntriesRawMessage &msg, AppendEntriesReplyMessage &reply) {
   auto [safe, stale] = check_safety(msg.prev_term, msg.prev_index);
   if (!safe) {
     reply.success = false;
@@ -260,7 +287,7 @@ void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
     if (stale) {
       // just ignore, since only one entry
     } else {
-      m_log.append(msg.entry);
+      m_log.append(msg.entry.get_op_buf(), msg.entry.data_size, msg.entry.term);
     }
     if (msg.commit > m_log.curr_commit()) {
       uint64_t new_commit = std::min(msg.commit, m_log.last_index());
@@ -269,18 +296,17 @@ void SMR::handle_append_entries(AppendEntriesMessage &msg, int from) {
     }
   }
   reply.index = m_log.last_index();
-  send_append_entries_reply(reply, from);
+  send_append_entries_reply(reply, msg.from);
 }
 
-void SMR::handle_append_entries_reply(AppendEntriesReplyMessage &msg,
-                                      int from) {
+void SMR::handle_append_entries_reply(AppendEntriesReplyMessage &msg) {
   if (!msg.success) {
     // tbd. nextIndex and matchIndex may not be realistic.
     LOG_F(FATAL, "current not supprt recovery on append entry failure");
     return;
   }
-  LOG_F(3, "peer %d vote for entry %zu", from, msg.index);
-  if (m_entry_votes.vote(from, msg.index)) {
+  LOG_F(3, "peer %d vote for entry %zu", msg.from, msg.index);
+  if (m_entry_votes.vote(msg.from, msg.index)) {
     uint64_t old_commit = m_log.curr_commit();
     bool ok = m_log.commit_to(msg.index);
     if (ok) {
@@ -294,27 +320,44 @@ void SMR::handle_append_entries_reply(AppendEntriesReplyMessage &msg,
 }
 
 void SMR::send_append_entries(int to) {
+  if (notify_send_append_entry == nullptr) {
+    return;
+  }
   auto prev_idx = m_prs[to].next - 1;
   auto prev_term = m_log.entry_at(prev_idx).term;
-  AppendEntriesMessage &append_msg = m_prealloc_aes[to];
+
+  if (pre_alloc_ae == nullptr) {
+    LOG_F(FATAL, "don't have proper pre-alloc append entry message");
+  }
+  AppendEntriesRawMessage &append_msg = pre_alloc_ae(to);
   append_msg.from = m_me;
   append_msg.term = m_term;
   append_msg.prev_term = prev_term;
   append_msg.prev_index = prev_idx;
   append_msg.commit = m_log.curr_commit();
   append_msg.group_id = m_gid;
-  append_msg.entry = m_log.entry_at(m_prs[to].next);
 
-  if (notify_send_append_entry != nullptr) {
-    notify_send_append_entry(append_msg, to);
-  }
+  Entry &e = m_log.entry_at(m_prs[to].next);
+  append_msg.entry.term = e.term;
+  append_msg.entry.index = e.index;
+  append_msg.entry.data_size = e.data.size();
+  std::copy(e.data.begin(), e.data.end(), append_msg.entry.get_op_buf());
+
+  append_msg.header.type = MessageType::MsgTypeAppend;
+  append_msg.header.size = sizeof(AppendEntriesRawMessage) + e.data.size();
+
+  notify_send_append_entry(append_msg, to);
 }
 
 void SMR::send_append_entries_reply(AppendEntriesReplyMessage &reply, int to) {
+  if (notify_send_append_entry_reply == nullptr) {
+    return;
+  }
+  reply.header.type = MessageType::MsgTypeAppendReply;
+  reply.header.size = sizeof(AppendEntriesReplyMessage);
   reply.group_id = m_gid;
   reply.from = m_me;
   reply.term = m_term;
-  if (notify_send_append_entry_reply != nullptr) {
-    notify_send_append_entry_reply(reply, to);
-  }
+
+  notify_send_append_entry_reply(reply, to);
 }

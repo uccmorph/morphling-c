@@ -1,11 +1,9 @@
-#include <signal.h>
-#include <getopt.h>
-
-
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/event.h>
 #include <event2/util.h>
+#include <getopt.h>
+#include <signal.h>
 
 #include <chrono>
 #include <loguru.hpp>
@@ -21,10 +19,9 @@ int cfg_id = 0;
 std::vector<std::string> cfg_peers_addr;
 
 bool parse_cmd(int argc, char **argv) {
-  static struct option long_options[] = {
-      {"id", required_argument, nullptr, 0},
-      {"peers-addr", required_argument, nullptr, 0},
-      {0, 0, 0, 0}};
+  static struct option long_options[] = {{"id", required_argument, nullptr, 0},
+                                         {"peers-addr", required_argument, nullptr, 0},
+                                         {0, 0, 0, 0}};
   int c = 0;
   bool fail = false;
   int mandatory = 0;
@@ -71,82 +68,47 @@ bool parse_cmd(int argc, char **argv) {
   return true;
 }
 
-class UDPTransport: public Transport {
+class UDPTransport : public Transport {
   int m_fd;
   sockaddr_in m_addr;
-
-  void __send(MessageType type, uint8_t *payload, uint64_t payload_size);
+  bool m_is_built = false;
 
  public:
   UDPTransport(int fd, sockaddr_in addr) : m_fd(fd), m_addr(addr) {}
   ~UDPTransport() {}
   void send(uint8_t *buf, uint64_t size);
-  void send(AppendEntriesMessage &msg);
-  void send(AppenEntriesReplyMessage &msg);
-  void send(ClientMessage &msg);
-  void send(ClientReplyMessage &msg);
-  void send(GuidanceMessage &msg);
+  bool recv(uint8_t *recv_buf, uint64_t max_size);
+  bool is_ready();
+
+  void set_built();
 };
 
-void UDPTransport::__send(MessageType type, uint8_t *payload, uint64_t payload_size) {
-  MessageHeader header;
-  header.type = type;
-  header.size = payload_size;
-
-  size_t size = sizeof(header) + payload_size;
-  uint8_t *buf = new uint8_t[size];
-  memcpy(buf, &header, sizeof(header));
-  memcpy(buf + sizeof(header), payload, payload_size);
-
+void UDPTransport::send(uint8_t *buf, uint64_t size) {
   int send_n = sendto(m_fd, buf, size, 0, (sockaddr *)&m_addr, sizeof(sockaddr_in));
-  LOG_F(INFO, "send_n = %d, size = %zu", send_n, size);
   if (send_n == -1) {
     LOG_F(FATAL, "udp send error: %d, %s", errno, std::strerror(errno));
   }
   assert(send_n == (int)size);
-
-  delete []buf;
+  LOG_F(INFO, "send send_n = %d bytes", send_n);
 }
 
-void UDPTransport::send(uint8_t *buf, uint64_t size) {}
-
-void UDPTransport::send(AppendEntriesMessage &msg) {
-  std::stringstream stream;
-  msgpack::pack(stream, msg);
-
-  __send(MessageType::MsgTypeAppend, (uint8_t *)stream.str().c_str(), stream.str().size());
+bool UDPTransport::recv(uint8_t *recv_buf, uint64_t expect_size) {
+  socklen_t addr_len = sizeof(m_addr);
+  int read_n = recvfrom(m_fd, recv_buf, expect_size, 0, (sockaddr *)&m_addr, &addr_len);
+  assert(read_n == (int)expect_size);
+  assert(addr_len == sizeof(m_addr));
+  LOG_F(INFO, "recv read_n = %d bytes", read_n);
+  return true;
 }
 
-void UDPTransport::send(AppenEntriesReplyMessage &msg) {
-  std::stringstream stream;
-  msgpack::pack(stream, msg);
+bool UDPTransport::is_ready() { return true; }
 
-  __send(MessageType::MsgTypeAppendReply, (uint8_t *)stream.str().c_str(), stream.str().size());
-}
-
-void UDPTransport::send(ClientMessage &msg) {
-  std::stringstream stream;
-  msgpack::pack(stream, msg);
-
-  __send(MessageType::MsgTypeClient, (uint8_t *)stream.str().c_str(), stream.str().size());
-}
-
-void UDPTransport::send(ClientReplyMessage &msg) {
-  std::stringstream stream;
-  msgpack::pack(stream, msg);
-
-  __send(MessageType::MsgTypeClientReply, (uint8_t *)stream.str().c_str(), stream.str().size());
-}
-
-void UDPTransport::send(GuidanceMessage &msg) {
-  uint8_t *payload = (uint8_t *)&msg;
-  uint64_t size = sizeof(msg);
-  LOG_F(3, "send GuidanceMessage from %d, votes: %d", msg.from, msg.votes);
-  __send(MessageType::MsgTypeGuidance, payload, size);
+void UDPTransport::set_built() {
+  m_is_built = true;
 }
 
 class UDPServer {
-public:
+ public:
   struct PeerInfo {
     std::string ip;
     int peer_port;
@@ -156,7 +118,7 @@ public:
     int peer_fd;
   };
 
-private:
+ private:
   event_base *m_base;
   int m_service_socket;
   int m_peer_socket;
@@ -164,20 +126,20 @@ private:
   int m_me;
   std::unordered_map<int, std::unique_ptr<Transport>> m_peer_trans;
 
-public:
+ public:
   Morphling *replica;
 
-public:
+ public:
   UDPServer();
-  void set_peer_info(int self, std::vector<std::string> peer_ip,
-                     std::vector<int> &service_port,
+  void set_peer_info(int self, std::vector<std::string> peer_ip, std::vector<int> &service_port,
                      std::vector<int> &peer_port);
   bool init_udp(int fd, int port);
   void init_service();
   void start();
   void on_udp_event();
+  MessageHeader recv_header(int fd, sockaddr_in &addr);
 
-  std::vector<PeerInfo>& get_peer_info();
+  std::vector<PeerInfo> &get_peer_info();
   int get_id();
 };
 
@@ -188,15 +150,13 @@ UDPServer::UDPServer() {
 }
 
 void UDPServer::set_peer_info(int self, std::vector<std::string> peer_ip,
-                   std::vector<int> &service_port,
-                   std::vector<int> &peer_port) {
+                              std::vector<int> &service_port, std::vector<int> &peer_port) {
   m_peer_info.resize(peer_ip.size());
   m_me = self;
   for (size_t id = 0; id < peer_ip.size(); id++) {
     m_peer_info[id].ip = peer_ip[id];
     m_peer_info[id].service_port = service_port[id];
     m_peer_info[id].peer_port = peer_port[id];
-
 
     if ((int)id != m_me) {
       sockaddr_in &addr = m_peer_info[id].sock_addr;
@@ -205,6 +165,8 @@ void UDPServer::set_peer_info(int self, std::vector<std::string> peer_ip,
       addr.sin_port = htons(peer_port[id]);
       m_peer_info[id].peer_fd = socket(AF_INET, SOCK_DGRAM, 0);
       m_peer_trans[id] = std::make_unique<UDPTransport>(m_peer_info[id].peer_fd, addr);
+      TransPtr trans = std::make_unique<UDPTransport>(m_peer_info[id].peer_fd, addr);
+      replica->set_peer_trans(id, trans);
     }
   }
 }
@@ -226,50 +188,41 @@ bool UDPServer::init_udp(int fd, int port) {
   return true;
 }
 
-void UDPServer::init_service() {
+MessageHeader UDPServer::recv_header(int fd, sockaddr_in &addr) {
+  socklen_t addr_len = sizeof(addr);
+  MessageHeader header;
+  uint8_t *buf = reinterpret_cast<uint8_t *>(&header);
+  int read_n = recvfrom(fd, buf, sizeof(header), MSG_PEEK, (sockaddr *)&addr, &addr_len);
+  assert(read_n == (int)sizeof(header));
+  assert(addr_len == sizeof(addr));
 
+  return header;
+}
+
+void UDPServer::init_service() {
   init_udp(m_peer_socket, m_peer_info[m_me].peer_port);
   init_udp(m_service_socket, m_peer_info[m_me].service_port);
 
   int flag = EV_READ | EV_PERSIST;
   event *ev_service = event_new(
-      m_base, m_service_socket, flag, [](evutil_socket_t fd, short what, void *arg) {
+      m_base, m_service_socket, flag,
+      [](evutil_socket_t fd, short what, void *arg) {
         UDPServer *server = (UDPServer *)arg;
         LOG_F(INFO, "new client event");
         if (what & EV_READ) {
           g_gauge_client_msg.set_probe1();
+
           sockaddr_in addr;
-          socklen_t addr_len = sizeof(addr);
-          MessageHeader header;
-          uint8_t *buf = reinterpret_cast<uint8_t *>(&header);
-          int read_n = recvfrom(fd, buf, sizeof(header), MSG_PEEK, (sockaddr *)&addr, &addr_len);
-          assert(read_n == (int)sizeof(header));
+          MessageHeader header = server->recv_header(fd, addr);
 
-          if (header.type == MessageType::MsgTypeClient) {
-            size_t msg_size = sizeof(header) + header.size;
-            // uint8_t *msg_buf = new uint8_t[msg_size];
-            uint8_t msg_buf[2048];
-            int read_n = recvfrom(fd, msg_buf, msg_size, 0, (sockaddr *)&addr, &addr_len);
-            assert(read_n == (int)msg_size);
-            uint8_t *tmp = msg_buf + sizeof(header);
+          std::unique_ptr<Transport> trans = std::make_unique<UDPTransport>(fd, addr);
 
-            ClientMessage msg;
-            auto oh = msgpack::unpack((char *)tmp, header.size);
-            oh.get().convert(msg);
-            LOG_F(INFO, "receive MsgTypeClient, key: %lx", msg.key_hash);
-            std::unique_ptr<Transport> trans = std::make_unique<UDPTransport>(fd, addr);
-
-            server->replica->handle_operation(msg, std::move(trans));
-            server->replica->bcast_msgs(server->m_peer_trans);
-
-            // delete []msg_buf;
-          } else if (header.type == MessageType::MsgTypeGetGuidance) {
-            uint8_t msg_buf[4];
-            recvfrom(fd, msg_buf, 0, 0, (sockaddr *)&addr, &addr_len);
-            server->replica->reply_guidance(std::make_unique<UDPTransport>(fd, addr));
-          } else {
-            LOG_F(ERROR, "client msg error type %d", header.type);
+          if (header.type != MessageType::MsgTypeClient &&
+              header.type != MessageType::MsgTypeGetGuidance) {
+            LOG_F(ERROR, "can not handle msg type %d from clients", header.type);
           }
+          server->replica->handle_message(header, trans);
+
           g_gauge_client_msg.set_probe2();
         }
       },
@@ -277,45 +230,21 @@ void UDPServer::init_service() {
   event_add(ev_service, nullptr);
 
   event *ev_peer = event_new(
-      m_base, m_peer_socket, flag, [](evutil_socket_t fd, short what, void *arg) {
+      m_base, m_peer_socket, flag,
+      [](evutil_socket_t fd, short what, void *arg) {
         UDPServer *server = (UDPServer *)arg;
         if (what & EV_READ) {
           sockaddr_in addr;
-          socklen_t addr_len = sizeof(addr);
-          MessageHeader header;
-          uint8_t *buf = reinterpret_cast<uint8_t *>(&header);
-          int read_n = recvfrom(fd, buf, sizeof(header), MSG_PEEK, (sockaddr *)&addr, &addr_len);
-          assert(read_n == (int)sizeof(header));
+          MessageHeader header = server->recv_header(fd, addr);
 
-          size_t msg_size = sizeof(header) + header.size;
-          uint8_t *msg_buf = new uint8_t[msg_size];
-          read_n = recvfrom(fd, msg_buf, msg_size, 0, (sockaddr *)&addr, &addr_len);
-          assert(read_n == (int)msg_size);
-          uint8_t *tmp = msg_buf + sizeof(header);
-
-          if (header.type == MessageType::MsgTypeAppend) {
-            AppendEntriesMessage msg;
-            auto oh = msgpack::unpack((char *)tmp, header.size);
-            oh.get().convert(msg);
-
-            server->replica->handle_append_entries(msg, msg.from);
-          } else if (header.type == MessageType::MsgTypeAppendReply) {
-            AppenEntriesReplyMessage msg;
-            auto oh = msgpack::unpack((char *)tmp, header.size);
-            oh.get().convert(msg);
-
-            server->replica->handle_append_entries_reply(msg, msg.from);
-            server->replica->maybe_apply();
-          } else if (header.type == MessageType::MsgTypeGuidance) {
-            GuidanceMessage *msg = (GuidanceMessage *)tmp;
-            LOG_F(INFO, "receive guidance msg from %d", msg->from);
-            // debug_print_guidance(&msg->guide);
-          } else {
-            LOG_F(ERROR, "peer msg error type %d", header.type);
+          if (header.type != MessageType::MsgTypeAppend &&
+              header.type != MessageType::MsgTypeAppendReply &&
+              header.type != MessageType::MsgTypeGuidance &&
+              header.type != MessageType::MsgTypeGetGuidance) {
+            LOG_F(ERROR, "can not handle msg type %d from peers", header.type);
           }
-          server->replica->bcast_msgs(server->m_peer_trans);
-
-          delete []msg_buf;
+          std::unique_ptr<Transport> trans = std::make_unique<UDPTransport>(fd, addr);
+          server->replica->handle_message(header, trans);
         }
       },
       this);
@@ -330,8 +259,9 @@ void UDPServer::init_service() {
           if ((int)id == server->get_id()) {
             continue;
           }
-          server->replica->reply_guidance(std::make_unique<UDPTransport>(
-              peer_info[id].peer_fd, peer_info[id].sock_addr));
+          std::unique_ptr<Transport> trans =
+              std::make_unique<UDPTransport>(peer_info[id].peer_fd, peer_info[id].sock_addr);
+          server->replica->reply_guidance(trans);
         }
       },
       this);
@@ -340,25 +270,17 @@ void UDPServer::init_service() {
 
   event *ev_latency_gauge = event_new(
       m_base, -1, EV_PERSIST,
-      [](evutil_socket_t fd, short what, void *arg) {
-        g_gauge_client_msg.average_time_us();
-      },
+      [](evutil_socket_t fd, short what, void *arg) { g_gauge_client_msg.average_time_us(); },
       this);
   struct timeval gauge_interval = {1, 0};
   event_add(ev_latency_gauge, &gauge_interval);
 }
 
-void UDPServer::start() {
-  event_base_dispatch(m_base);
-}
+void UDPServer::start() { event_base_dispatch(m_base); }
 
-std::vector<UDPServer::PeerInfo>& UDPServer::get_peer_info() {
-  return m_peer_info;
-}
+std::vector<UDPServer::PeerInfo> &UDPServer::get_peer_info() { return m_peer_info; }
 
-int UDPServer::get_id() {
-  return m_me;
-}
+int UDPServer::get_id() { return m_me; }
 
 int main(int argc, char **argv) {
   loguru::init(argc, argv);
@@ -388,5 +310,4 @@ int main(int argc, char **argv) {
   server.init_service();
 
   server.start();
-
 }
