@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <atomic>
 #include <loguru.hpp>
 #include <map>

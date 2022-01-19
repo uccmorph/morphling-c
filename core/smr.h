@@ -6,12 +6,11 @@
 
 #include <string>
 #include <cstdint>
+#include <cassert>
 #include <tuple>
 #include <vector>
 #include <unordered_map>
 #include <functional>
-
-#include <msgpack.hpp>
 
 #include "guidance.h"
 #include "message.h"

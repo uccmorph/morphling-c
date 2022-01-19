@@ -2,7 +2,6 @@
 #define __CORE_MESSAGE_H__
 
 #include <cstdint>
-#include <msgpack.hpp>
 #include <vector>
 
 #include "guidance.h"

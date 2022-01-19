@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <deque>
+
 #include "message.h"
 #include "morphling.h"
 #include "transport.h"
