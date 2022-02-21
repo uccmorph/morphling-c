@@ -4,7 +4,11 @@
 #include <event2/util.h>
 #include <getopt.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <arpa/inet.h>
 
+#include <cstring>
 #include <chrono>
 #include <loguru.hpp>
 #include <unordered_map>
