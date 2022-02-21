@@ -97,3 +97,66 @@ Using tcp server, send time is:
 
 * The first probe of Client op is the point after recv, and the second probe of Client op is the point after send.
 * So, message processing takes most of the time.
+
+
+## 2022.2.10
+WSL measure the processing time including recv, handle and send:
+```
+  int flag = EV_READ | EV_PERSIST;
+  event *ev_service = event_new(
+      m_base, m_service_socket, flag,
+      [](evutil_socket_t fd, short what, void *arg) {
+        UDPServer *server = (UDPServer *)arg;
+        LOG_F(INFO, "new client event");
+        if (what & EV_READ) {
+          g_gauge_client_msg.set_probe1();
+
+          sockaddr_in addr;
+          MessageHeader header = server->recv_header(fd, addr);
+
+          std::unique_ptr<Transport> trans = std::make_unique<UDPTransport>(fd, addr);
+
+          if (header.type != MessageType::MsgTypeClient &&
+              header.type != MessageType::MsgTypeGetGuidance) {
+            LOG_F(ERROR, "can not handle msg type %d from clients", header.type);
+          }
+          server->replica->handle_message(header, trans);
+
+          g_gauge_client_msg.set_probe2();
+        }
+      },
+      this);
+  event_add(ev_service, nullptr);
+```
+[Client op] 29970 points, average time: 13.991358 us
+[Client op] 20042 points, average time: 14.770881 us
+./client2 --total 12 --group 2 --ro --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 50000 -v ERROR
+
+
+[Client op] no probe points in these time
+[Client op] no probe points in these time
+[Client op] 22527 points, average time: 5.148888 us
+[Client op] 27477 points, average time: 5.146486 us
+./client2 --total 4 --group 2 --ro --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 50000 -v ERROR
+
+
+Adding send gauge:
+```
+void UDPTransport::send(uint8_t *buf, uint64_t size) {
+  g_gauge_send.set_probe1();
+  int send_n = sendto(m_fd, buf, size, 0, (sockaddr *)&m_addr, sizeof(sockaddr_in));
+  if (send_n == -1) {
+    LOG_F(FATAL, "udp send error: %d, %s", errno, std::strerror(errno));
+  }
+  assert(send_n == (int)size);
+  LOG_F(INFO, "send send_n = %d bytes", send_n);
+  g_gauge_send.set_probe2();
+}
+```
+[Client op] 34408 points, average time: 5.188735 us
+[udp send] 34408 points, average time: 3.109219 us
+[Client op] 15596 points, average time: 5.180303 us
+[udp send] 15598 points, average time: 3.107129 us
+./client2 --total 4 --group 2 --ro --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 50000 -v ERROR
+
+So we can say the average handle time is 2 us

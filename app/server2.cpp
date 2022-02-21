@@ -14,6 +14,7 @@
 #include "utils.h"
 
 Gauge g_gauge_client_msg("Client op");
+Gauge g_gauge_send("udp send");
 
 int cfg_id = 0;
 std::vector<std::string> cfg_peers_addr;
@@ -84,12 +85,14 @@ class UDPTransport : public Transport {
 };
 
 void UDPTransport::send(uint8_t *buf, uint64_t size) {
+  g_gauge_send.set_probe1();
   int send_n = sendto(m_fd, buf, size, 0, (sockaddr *)&m_addr, sizeof(sockaddr_in));
   if (send_n == -1) {
     LOG_F(FATAL, "udp send error: %d, %s", errno, std::strerror(errno));
   }
   assert(send_n == (int)size);
   LOG_F(INFO, "send send_n = %d bytes", send_n);
+  g_gauge_send.set_probe2();
 }
 
 bool UDPTransport::recv(uint8_t *recv_buf, uint64_t expect_size) {
@@ -270,7 +273,10 @@ void UDPServer::init_service() {
 
   event *ev_latency_gauge = event_new(
       m_base, -1, EV_PERSIST,
-      [](evutil_socket_t fd, short what, void *arg) { g_gauge_client_msg.average_time_us(); },
+      [](evutil_socket_t fd, short what, void *arg) {
+        g_gauge_client_msg.average_time_us();
+        g_gauge_send.average_time_us();
+      },
       this);
   struct timeval gauge_interval = {1, 0};
   event_add(ev_latency_gauge, &gauge_interval);

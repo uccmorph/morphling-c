@@ -65,7 +65,7 @@ struct Guidance {
   // uint8_t cluster_size;
   // 0x000000FF for cluster_size, 0x0000FF00 for alive_num
   uint32_t cluster_size:8;
-  uint32_t alive_num:8;
+  uint32_t alive_num:8; // this field may be redandunt
   uint32_t __padding:16;
   NodeStatus cluster[ReplicaNumbers];
 
