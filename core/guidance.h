@@ -60,6 +60,9 @@ struct NodeStatus {
 };
 
 struct Guidance {
+#ifdef CONFIG_GUIDANCE_CHECKSUM
+  uint64_t checksum = 0;
+#endif
   uint64_t term = 0;
   // uint8_t alive_num;
   // uint8_t cluster_size;

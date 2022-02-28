@@ -30,6 +30,7 @@ int cfg_total_clients = 4;
 int cfg_client_grouping = 1;
 std::vector<std::string> cfg_replica_addr;
 std::vector<int> cfg_replica_port;
+std::vector<int> cfg_guidance_port;
 bool cfg_is_read = false;
 int cfg_msg_nums = 5;
 bool cfg_unreplicated_read = false;
@@ -43,6 +44,7 @@ std::vector<Gauge> g_latency_gauge;
 
 void handle_reply(evutil_socket_t fd, short what, void *arg);
 void handle_ur_reply(evutil_socket_t fd, short what, void *arg);
+void handle_guidance_reply(evutil_socket_t fd, short what, void *arg);
 
 bool parse_cmd(int argc, char **argv) {
   int has_default = 0;
@@ -127,7 +129,9 @@ class Channel {
   std::string replica_port;
 
   int fd;
+  int guidance_fd;
   sockaddr_in udp_dest;
+  sockaddr_in guidance_dest;
 
  public:
   Client *client;
@@ -137,6 +141,8 @@ class Channel {
 
   MessageHeader recv(uint8_t *buf, size_t max_size);
   void send(uint8_t *buf, size_t size);
+  void send_get_guidance(uint8_t *buf, size_t size);
+  MessageHeader recv_guidance(uint8_t *buf, size_t max_size);
 };
 
 class Client {
@@ -189,9 +195,14 @@ class Client {
       m_channel[id].client = this;
 
       m_channel[id].fd = socket(AF_INET, SOCK_DGRAM, 0);
+      m_channel[id].guidance_fd = socket(AF_INET, SOCK_DGRAM, 0);
       m_channel[id].udp_dest.sin_family = AF_INET;
       m_channel[id].udp_dest.sin_addr.s_addr = inet_addr(ips[id].c_str());
       m_channel[id].udp_dest.sin_port = htons(ports[id]);
+
+      m_channel[id].guidance_dest.sin_family = AF_INET;
+      m_channel[id].guidance_dest.sin_addr.s_addr = inet_addr(ips[id].c_str());
+      m_channel[id].guidance_dest.sin_port = htons(cfg_guidance_port[id]);
     }
 
     m_one_turn_collection.resize(max_replica_id);
@@ -210,10 +221,9 @@ class Client {
   bool has_finish_all() { return finish_all_msg; }
 
   void set_guidance(int id, Guidance &guide) {
-    LOG_F(INFO, "set new guidance of replica: %d", id);
+    LOG_F(INFO, "set new guidance of replica: %d. %s", id, guide.to_string().c_str());
     // m_guidace = guide;
     m_one_turn_collection[id] = guide;
-    // debug_print_guidance(&m_one_turn_collection[id]);
   }
 
   bool check_guidance_quorum() {
@@ -307,6 +317,9 @@ void Channel::build_event() {
   }
   event *ev = event_new(ev_base, fd, EV_READ | EV_PERSIST, cb, this);
   event_add(ev, nullptr);
+  event *ev_guide =
+      event_new(ev_base, guidance_fd, EV_READ | EV_PERSIST, handle_guidance_reply, this);
+  event_add(ev_guide, nullptr);
 }
 
 MessageHeader Channel::recv(uint8_t *buf, size_t max_size) {
@@ -325,6 +338,26 @@ MessageHeader Channel::recv(uint8_t *buf, size_t max_size) {
 
 void Channel::send(uint8_t *buf, size_t size) {
   int send_n = sendto(fd, buf, size, 0, (sockaddr *)&udp_dest, sizeof(udp_dest));
+  assert(send_n == (int)size);
+}
+
+MessageHeader Channel::recv_guidance(uint8_t *buf, size_t max_size) {
+  MessageHeader header;
+  uint8_t *header_tmp = reinterpret_cast<uint8_t *>(&header);
+  socklen_t addr_len = sizeof(udp_dest);
+  int read_n = recvfrom(guidance_fd, header_tmp, sizeof(header), MSG_PEEK,
+                        (sockaddr *)&guidance_dest, &addr_len);
+  assert(read_n == (int)sizeof(header));
+  assert(header.size < max_size);
+
+  read_n = recvfrom(guidance_fd, buf, header.size, 0, (sockaddr *)&guidance_dest, &addr_len);
+  assert(read_n == (int)header.size);
+
+  return header;
+}
+
+void Channel::send_get_guidance(uint8_t *buf, size_t size) {
+  int send_n = sendto(guidance_fd, buf, size, 0, (sockaddr *)&guidance_dest, sizeof(guidance_dest));
   assert(send_n == (int)size);
 }
 
@@ -403,7 +436,8 @@ void Client::request_guidance(int id) {
   header.size = sizeof(MessageHeader);
 
   uint8_t *buf = (uint8_t *)&header;
-  m_channel[id].send(buf, header.size);
+  // m_channel[id].send(buf, header.size);
+  m_channel[id].send_get_guidance(buf, header.size);
   // need to handle and add on reply later.
 }
 
@@ -492,6 +526,17 @@ void handle_ur_reply(evutil_socket_t fd, short what, void *arg) {
   chan->client->handle_ur_reply(chan, header.type, buf, header.size);
 }
 
+void handle_guidance_reply(evutil_socket_t fd, short what, void *arg) {
+  if ((what & EV_READ) == 0) {
+    LOG_F(FATAL, "should have a read event");
+  }
+  Channel *chan = (Channel *)arg;
+  uint8_t buf[2048];
+
+  auto header = chan->recv_guidance(buf, 2048);
+  chan->client->handle_reply(chan, header.type, buf, header.size);
+}
+
 /* --------------- multi-thread --------------- */
 
 Client *one_ready_client(std::vector<Client> &clients) {
@@ -511,8 +556,7 @@ bool check_setup(std::vector<Client> &clients) {
       if (!c.update_leading_guidance()) {
         LOG_F(FATAL, "client %d update leading guidance fail", c.get_id());
       }
-      // LOG_F(INFO, "client use guidance:");
-      // debug_print_guidance(&c.peek_local_guidance());
+      LOG_F(INFO, "client use guidance: %s", c.peek_local_guidance().to_string().c_str());
       c.status = Client::status_t::idle;
     }
   }
@@ -601,6 +645,10 @@ int main(int argc, char **argv) {
   cfg_replica_port.emplace_back(9990);
   cfg_replica_port.emplace_back(9991);
   cfg_replica_port.emplace_back(9992);
+
+  cfg_guidance_port.emplace_back(9996);
+  cfg_guidance_port.emplace_back(9997);
+  cfg_guidance_port.emplace_back(9998);
 
   g_latency_gauge.resize(cfg_total_clients);
   int thread_nums = cfg_total_clients / cfg_client_grouping;

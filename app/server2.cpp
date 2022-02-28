@@ -12,6 +12,7 @@
 #include <chrono>
 #include <loguru.hpp>
 #include <unordered_map>
+#include <thread>
 
 #include "morphling.h"
 #include "transport.h"
@@ -22,6 +23,9 @@ Gauge g_gauge_send("udp send");
 
 int cfg_id = 0;
 std::vector<std::string> cfg_peers_addr;
+std::vector<int> service_port(3);
+std::vector<int> peer_port(3);
+std::vector<int> guidance_port(3);
 
 bool parse_cmd(int argc, char **argv) {
   static struct option long_options[] = {{"id", required_argument, nullptr, 0},
@@ -95,7 +99,7 @@ void UDPTransport::send(uint8_t *buf, uint64_t size) {
     LOG_F(FATAL, "udp send error: %d, %s", errno, std::strerror(errno));
   }
   assert(send_n == (int)size);
-  LOG_F(INFO, "send send_n = %d bytes", send_n);
+  LOG_F(INFO, "fd %d send send_n = %d bytes", m_fd, send_n);
   g_gauge_send.set_probe2();
 }
 
@@ -120,6 +124,7 @@ class UDPServer {
     std::string ip;
     int peer_port;
     int service_port;
+    int guidance_port;
 
     sockaddr_in sock_addr;
     int peer_fd;
@@ -129,19 +134,22 @@ class UDPServer {
   event_base *m_base;
   int m_service_socket;
   int m_peer_socket;
+  int m_guidance_socket;
   std::vector<PeerInfo> m_peer_info;
   int m_me;
   std::unordered_map<int, std::unique_ptr<Transport>> m_peer_trans;
 
+  void base_init();
  public:
   Morphling *replica;
 
  public:
   UDPServer();
-  void set_peer_info(int self, std::vector<std::string> peer_ip, std::vector<int> &service_port,
-                     std::vector<int> &peer_port);
+  UDPServer(Morphling &r);
+  void set_peer_info();
   bool init_udp(int fd, int port);
   void init_service();
+  void init_guidance_service();
   void start();
   void on_udp_event();
   MessageHeader recv_header(int fd, sockaddr_in &addr);
@@ -150,25 +158,35 @@ class UDPServer {
   int get_id();
 };
 
-UDPServer::UDPServer() {
+void UDPServer::base_init() {
   m_base = event_base_new();
   m_peer_socket = socket(AF_INET, SOCK_DGRAM, 0);
   m_service_socket = socket(AF_INET, SOCK_DGRAM, 0);
+  m_guidance_socket = socket(AF_INET, SOCK_DGRAM, 0);
 }
 
-void UDPServer::set_peer_info(int self, std::vector<std::string> peer_ip,
-                              std::vector<int> &service_port, std::vector<int> &peer_port) {
-  m_peer_info.resize(peer_ip.size());
-  m_me = self;
-  for (size_t id = 0; id < peer_ip.size(); id++) {
-    m_peer_info[id].ip = peer_ip[id];
+UDPServer::UDPServer() {
+  base_init();
+}
+
+UDPServer::UDPServer(Morphling &r): replica(&r) {
+  base_init();
+  set_peer_info();
+}
+
+void UDPServer::set_peer_info() {
+  m_peer_info.resize(cfg_peers_addr.size());
+  m_me = cfg_id;
+  for (size_t id = 0; id < cfg_peers_addr.size(); id++) {
+    m_peer_info[id].ip = cfg_peers_addr[id];
     m_peer_info[id].service_port = service_port[id];
     m_peer_info[id].peer_port = peer_port[id];
+    m_peer_info[id].guidance_port = guidance_port[id];
 
     if ((int)id != m_me) {
       sockaddr_in &addr = m_peer_info[id].sock_addr;
       addr.sin_family = AF_INET;
-      addr.sin_addr.s_addr = inet_addr(peer_ip[id].c_str());
+      addr.sin_addr.s_addr = inet_addr(cfg_peers_addr[id].c_str());
       addr.sin_port = htons(peer_port[id]);
       m_peer_info[id].peer_fd = socket(AF_INET, SOCK_DGRAM, 0);
       m_peer_trans[id] = std::make_unique<UDPTransport>(m_peer_info[id].peer_fd, addr);
@@ -286,11 +304,45 @@ void UDPServer::init_service() {
   event_add(ev_latency_gauge, &gauge_interval);
 }
 
+void UDPServer::init_guidance_service() {
+  init_udp(m_guidance_socket, m_peer_info[m_me].guidance_port);
+  int flag = EV_READ | EV_PERSIST;
+  event *ev_guidance = event_new(
+      m_base, m_guidance_socket, flag,
+      [](evutil_socket_t fd, short what, void *arg) {
+        UDPServer *server = (UDPServer *)arg;
+        LOG_F(INFO, "new get guidance event");
+        if (what & EV_READ) {
+          sockaddr_in addr;
+          MessageHeader header = server->recv_header(fd, addr);
+
+          std::unique_ptr<Transport> trans = std::make_unique<UDPTransport>(fd, addr);
+
+          if (header.type != MessageType::MsgTypeGetGuidance) {
+            LOG_F(ERROR, "can not handle msg type %d from clients", header.type);
+          }
+          server->replica->handle_message(header, trans);
+        }
+      },
+      this);
+  event_add(ev_guidance, nullptr);
+}
+
 void UDPServer::start() { event_base_dispatch(m_base); }
 
 std::vector<UDPServer::PeerInfo> &UDPServer::get_peer_info() { return m_peer_info; }
 
 int UDPServer::get_id() { return m_me; }
+
+/* --------- threading --------- */
+
+void guidance_service(Morphling &r) {
+  UDPServer server(r);
+
+  server.init_guidance_service();
+  server.start();
+}
+
 
 int main(int argc, char **argv) {
   loguru::init(argc, argv);
@@ -301,8 +353,7 @@ int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
 
   std::vector<int> peers{0, 1, 2};
-  std::vector<int> service_port(3);
-  std::vector<int> peer_port(3);
+
   service_port[0] = 9990;
   service_port[1] = 9991;
   service_port[2] = 9992;
@@ -311,12 +362,15 @@ int main(int argc, char **argv) {
   peer_port[1] = 9994;
   peer_port[2] = 9995;
 
+  guidance_port[0] = 9996;
+  guidance_port[1] = 9997;
+  guidance_port[2] = 9998;
+
+
   Morphling replica(cfg_id, peers);
-  UDPServer server;
+  UDPServer server(replica);
 
-  server.replica = &replica;
-  server.set_peer_info(cfg_id, cfg_peers_addr, service_port, peer_port);
-
+  std::thread guide_thread(guidance_service, std::ref(replica));
   server.init_service();
 
   server.start();

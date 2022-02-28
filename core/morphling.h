@@ -2,6 +2,7 @@
 #define __CORE_MORPHLING_H__
 
 #include <memory>
+#include <atomic>
 
 #include "smr.h"
 #include "transport.h"
@@ -22,9 +23,10 @@ class Morphling {
   std::vector<SMR> m_smrs;
   std::vector<Entry> m_apply_entries;
   std::unordered_map<uint64_t, TransPtr> m_client_pendings;
-
+  std::vector<uint64_t> load_counter;
   std::unordered_map<int, TransPtr> m_network;
 
+  std::atomic_flag m_guidance_lock_flag = ATOMIC_FLAG_INIT;
   // simple memory storage
   std::unordered_map<uint64_t, std::vector<uint8_t>> m_storage;
 

@@ -160,3 +160,20 @@ void UDPTransport::send(uint8_t *buf, uint64_t size) {
 ./client2 --total 4 --group 2 --ro --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 50000 -v ERROR
 
 So we can say the average handle time is 2 us
+
+## 2022.2.28
+WSL
+
+ucc@desktop-8sjudi:~/code/morphling-c/build$ ./client-run.sh
+total time: 403.931200 ms, throughput: 74.270074 Kops
+ucc@desktop-8sjudi:~/code/morphling-c/build$ ./client-run.sh
+total time: 396.902900 ms, throughput: 75.585238 Kops
+./client2 --total 12 --group 4 --ro --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 30000 -v ERROR
+
+When we change --group or --total, throughput will drop.
+like:
+ucc@desktop-8sjudi:~/code/morphling-c/build$ ./client-run.sh
+total time: 901.464700 ms, throughput: 33.279173 Kops
+ucc@desktop-8sjudi:~/code/morphling-c/build$ ./client-run.sh
+total time: 939.145000 ms, throughput: 31.943949 Kops
+./client2 --total 12 --group 6 --ro --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 30000 -v ERROR

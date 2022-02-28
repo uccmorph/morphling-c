@@ -200,7 +200,13 @@ void Morphling::reply_guidance(TransPtr &trans) {
   msg.header.size = sizeof(GuidanceMessage);
   msg.from = m_me;
   msg.votes = 3;
+#ifdef CONFIG_GUIDANCE_LOCK
+  while (m_guidance_lock_flag.test_and_set(std::memory_order_acquire)) {}
+#endif
   msg.guide = m_guide;
+#ifdef CONFIG_GUIDANCE_LOCK
+  m_guidance_lock_flag.clear(std::memory_order_release)
+#endif
   trans->send((uint8_t *)&msg, msg.header.size);
 }
 
