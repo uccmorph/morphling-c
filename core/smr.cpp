@@ -10,7 +10,7 @@
 
 SMRLog::SMRLog() {
   m_dummy_entry.index = 0;
-  m_dummy_entry.term = 0;
+  m_dummy_entry.epoch = 0;
   m_log.reserve(1000000);
 }
 
@@ -26,7 +26,7 @@ uint64_t SMRLog::entry_pos(uint64_t e_index) {
 
 std::string SMRLog::debug() {
   std::stringstream ss;
-  ss << "log size: " << m_log.size() << ", dummy entry (term " << m_dummy_entry.term <<
+  ss << "log size: " << m_log.size() << ", dummy entry (epoch " << m_dummy_entry.epoch <<
   ", index " << m_dummy_entry.index << "), commit: " << m_commits << "\n";
   for (size_t i = 0; i < m_log.size(); i++) {
     ss << "entry: " << i << ", " << m_log[i].debug() << "\n";
@@ -35,13 +35,13 @@ std::string SMRLog::debug() {
   return std::move(ss.str());
 }
 
-uint64_t SMRLog::append(Entry &e) { return SMRLog::append(e.data.data(), e.data.size(), e.term); }
+uint64_t SMRLog::append(Entry &e) { return SMRLog::append(e.data.data(), e.data.size(), e.epoch); }
 
-// uint64_t SMRLog::append(std::vector<uint8_t> &data, uint64_t term) {
+// uint64_t SMRLog::append(std::vector<uint8_t> &data, uint64_t epoch) {
 //     if (m_log.size() == 0) {
 //     auto &new_e = m_log.emplace_back(data);
 //     new_e.index = 1;
-//     new_e.term = term;
+//     new_e.epoch = epoch;
 //     return 1;
 //   }
 //   // caveat: After emplace new data, vector may change its size, resulting a
@@ -50,16 +50,16 @@ uint64_t SMRLog::append(Entry &e) { return SMRLog::append(e.data.data(), e.data.
 //   auto &last_e = m_log.back();
 //   auto &new_e = m_log.emplace_back(data);
 //   new_e.index = last_e.index + 1;
-//   new_e.term = term;
+//   new_e.epoch = epoch;
 
 //   return new_e.index;
 // }
 
-uint64_t SMRLog::append(uint8_t *data, size_t data_size, uint64_t term) {
+uint64_t SMRLog::append(uint8_t *data, size_t data_size, uint64_t epoch) {
   auto &new_e = m_log.emplace_back(data, data_size);
   auto new_pos = m_log.size() - 1;
   new_e.index = m_dummy_entry.index + 1 + new_pos;
-  new_e.term = term;
+  new_e.epoch = epoch;
 
   return new_e.index;
 }
@@ -191,7 +191,7 @@ void SMR::set_pre_alloc_ae_cb(ae_cb_t ae_cb) {
 
 void SMR::set_gid(uint64_t gid) { m_gid = gid; }
 
-void SMR::set_term(uint64_t term) { m_term = term; }
+void SMR::set_term(uint64_t epoch) { m_term = epoch; }
 
 void SMR::init() {
   m_entry_votes.init(m_peers.size());
@@ -208,13 +208,13 @@ std::tuple<bool, bool> SMR::check_safety(uint64_t prev_term,
   Entry &last_entry = m_log.last_entry();
   if (prev_index < last_entry.index) {
     Entry &te = m_log.entry_at(prev_index);
-    if (prev_term != te.term) {
+    if (prev_term != te.epoch) {
       return std::make_tuple(false, false);
     } else {
       return std::make_tuple(true, true);
     }
   } else if (prev_index == last_entry.index) {
-    if (prev_term != last_entry.term) {
+    if (prev_term != last_entry.epoch) {
       return std::make_tuple(false, false);
     } else {
       return std::make_tuple(true, false);
@@ -224,7 +224,7 @@ std::tuple<bool, bool> SMR::check_safety(uint64_t prev_term,
 }
 
 // uint64_t SMR::handle_operation(ClientMessage &msg) {
-//   auto last_idx = m_log.append(msg.op.data(), msg.op.size(), msg.term);
+//   auto last_idx = m_log.append(msg.op.data(), msg.op.size(), msg.epoch);
 //   m_entry_votes.vote(m_me, last_idx);
 //   m_prs[m_me].match = last_idx;
 //   m_prs[m_me].next = last_idx + 1;
@@ -287,7 +287,7 @@ void SMR::handle_append_entries(AppendEntriesRawMessage &msg, AppendEntriesReply
     if (stale) {
       // just ignore, since only one entry
     } else {
-      m_log.append(msg.entry.get_op_buf(), msg.entry.data_size, msg.entry.term);
+      m_log.append(msg.entry.get_op_buf(), msg.entry.data_size, msg.entry.epoch);
     }
     if (msg.commit > m_log.curr_commit()) {
       uint64_t new_commit = std::min(msg.commit, m_log.last_index());
@@ -324,21 +324,21 @@ void SMR::send_append_entries(int to) {
     return;
   }
   auto prev_idx = m_prs[to].next - 1;
-  auto prev_term = m_log.entry_at(prev_idx).term;
+  auto prev_term = m_log.entry_at(prev_idx).epoch;
 
   if (pre_alloc_ae == nullptr) {
     LOG_F(FATAL, "don't have proper pre-alloc append entry message");
   }
   AppendEntriesRawMessage &append_msg = pre_alloc_ae(to);
   append_msg.from = m_me;
-  append_msg.term = m_term;
+  append_msg.epoch = m_term;
   append_msg.prev_term = prev_term;
   append_msg.prev_index = prev_idx;
   append_msg.commit = m_log.curr_commit();
   append_msg.group_id = m_gid;
 
   Entry &e = m_log.entry_at(m_prs[to].next);
-  append_msg.entry.term = e.term;
+  append_msg.entry.epoch = e.epoch;
   append_msg.entry.index = e.index;
   append_msg.entry.data_size = e.data.size();
   std::copy(e.data.begin(), e.data.end(), append_msg.entry.get_op_buf());
@@ -357,7 +357,7 @@ void SMR::send_append_entries_reply(AppendEntriesReplyMessage &reply, int to) {
   reply.header.size = sizeof(AppendEntriesReplyMessage);
   reply.group_id = m_gid;
   reply.from = m_me;
-  reply.term = m_term;
+  reply.epoch = m_term;
 
   notify_send_append_entry_reply(reply, to);
 }

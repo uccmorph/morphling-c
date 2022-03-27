@@ -13,6 +13,7 @@
 #include <loguru.hpp>
 #include <unordered_map>
 #include <thread>
+#include <random>
 
 #include "morphling.h"
 #include "transport.h"
@@ -77,13 +78,29 @@ bool parse_cmd(int argc, char **argv) {
   return true;
 }
 
+// one tick is constantly configured, like 50ms, 100ms, 200ms...
+// when calling event_add()
+class RandomTick {
+  std::random_device r;
+  std::mt19937 gen;
+  std::uniform_int_distribution<uint32_t> distrib;
+
+public:
+  RandomTick(): gen(r()), distrib(10, 20){}
+  uint32_t generate() {
+    return distrib(gen);
+  }
+};
+
 class UDPTransport : public Transport {
   int m_fd;
   sockaddr_in m_addr;
   bool m_is_built = false;
+  bool m_enable_gauge = true;
 
  public:
-  UDPTransport(int fd, sockaddr_in addr) : m_fd(fd), m_addr(addr) {}
+  UDPTransport(int fd, sockaddr_in addr, bool enable_gauge = true)
+      : m_fd(fd), m_addr(addr), m_enable_gauge(enable_gauge) {}
   ~UDPTransport() {}
   void send(uint8_t *buf, uint64_t size);
   bool recv(uint8_t *recv_buf, uint64_t max_size);
@@ -93,14 +110,18 @@ class UDPTransport : public Transport {
 };
 
 void UDPTransport::send(uint8_t *buf, uint64_t size) {
-  g_gauge_send.set_probe1();
+  if (m_enable_gauge) {
+    g_gauge_send.set_probe1();
+  }
   int send_n = sendto(m_fd, buf, size, 0, (sockaddr *)&m_addr, sizeof(sockaddr_in));
   if (send_n == -1) {
     LOG_F(FATAL, "udp send error: %d, %s", errno, std::strerror(errno));
   }
   assert(send_n == (int)size);
   LOG_F(INFO, "fd %d send send_n = %d bytes", m_fd, send_n);
-  g_gauge_send.set_probe2();
+  if (m_enable_gauge) {
+    g_gauge_send.set_probe2();
+  }
 }
 
 bool UDPTransport::recv(uint8_t *recv_buf, uint64_t expect_size) {
@@ -142,10 +163,14 @@ class UDPServer {
   void base_init();
  public:
   Morphling *replica;
+  bool m_enable_gauge;
+  RandomTick m_rand_tick;
+  uint32_t m_tick_count = 0;
+  uint32_t m_tick_max;
 
  public:
   UDPServer();
-  UDPServer(Morphling &r);
+  UDPServer(Morphling &r, bool enable_gauge = true);
   void set_peer_info();
   bool init_udp(int fd, int port);
   void init_service();
@@ -163,13 +188,15 @@ void UDPServer::base_init() {
   m_peer_socket = socket(AF_INET, SOCK_DGRAM, 0);
   m_service_socket = socket(AF_INET, SOCK_DGRAM, 0);
   m_guidance_socket = socket(AF_INET, SOCK_DGRAM, 0);
+  m_tick_max = m_rand_tick.generate();
 }
 
 UDPServer::UDPServer() {
   base_init();
 }
 
-UDPServer::UDPServer(Morphling &r): replica(&r) {
+UDPServer::UDPServer(Morphling &r, bool enable_gauge)
+    : replica(&r), m_enable_gauge(enable_gauge) {
   base_init();
   set_peer_info();
 }
@@ -265,7 +292,8 @@ void UDPServer::init_service() {
           if (header.type != MessageType::MsgTypeAppend &&
               header.type != MessageType::MsgTypeAppendReply &&
               header.type != MessageType::MsgTypeGuidance &&
-              header.type != MessageType::MsgTypeGetGuidance) {
+              header.type != MessageType::MsgTypeGetGuidance &&
+              header.type != MessageType::MsgTypeGossip) {
             LOG_F(ERROR, "can not handle msg type %d from peers", header.type);
           }
           std::unique_ptr<Transport> trans = std::make_unique<UDPTransport>(fd, addr);
@@ -279,19 +307,18 @@ void UDPServer::init_service() {
       m_base, -1, EV_PERSIST,
       [](evutil_socket_t fd, short what, void *arg) {
         UDPServer *server = (UDPServer *)arg;
-        auto &peer_info = server->get_peer_info();
-        for (size_t id = 0; id < peer_info.size(); id++) {
-          if ((int)id == server->get_id()) {
-            continue;
-          }
-          std::unique_ptr<Transport> trans =
-              std::make_unique<UDPTransport>(peer_info[id].peer_fd, peer_info[id].sock_addr);
-          server->replica->reply_guidance(trans);
+        if (server->m_tick_count < server->m_tick_max) {
+          server->m_tick_count += 1;
+        } else {
+          server->replica->gossip();
+          server->m_tick_count = 0;
+          server->m_tick_max = server->m_rand_tick.generate();
         }
       },
       this);
-  struct timeval one_sec = {5, 0};
-  event_add(ev_period, &one_sec);
+  // it should be change based on server->m_tick_max and [150, 300] ms constraint
+  struct timeval one_tick = {0, 200000};
+  event_add(ev_period, &one_tick);
 
   event *ev_latency_gauge = event_new(
       m_base, -1, EV_PERSIST,
@@ -316,7 +343,8 @@ void UDPServer::init_guidance_service() {
           sockaddr_in addr;
           MessageHeader header = server->recv_header(fd, addr);
 
-          std::unique_ptr<Transport> trans = std::make_unique<UDPTransport>(fd, addr);
+          std::unique_ptr<Transport> trans =
+              std::make_unique<UDPTransport>(fd, addr, server->m_enable_gauge);
 
           if (header.type != MessageType::MsgTypeGetGuidance) {
             LOG_F(ERROR, "can not handle msg type %d from clients", header.type);
@@ -337,7 +365,7 @@ int UDPServer::get_id() { return m_me; }
 /* --------- threading --------- */
 
 void guidance_service(Morphling &r) {
-  UDPServer server(r);
+  UDPServer server(r, false);
 
   server.init_guidance_service();
   server.start();

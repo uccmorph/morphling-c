@@ -12,13 +12,14 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <cstring>
 #include <atomic>
+#include <cstring>
 #include <loguru.hpp>
 #include <map>
 #include <string>
 #include <thread>
 #include <vector>
+#include <random>
 
 #include "message.h"
 #include "morphling.h"
@@ -41,6 +42,9 @@ static uint8_t *g_value;
 std::atomic_int g_sent_nums(0);
 
 std::vector<Gauge> g_latency_gauge;
+
+class KeyGenerator;
+KeyGenerator *g_key_mgr;
 
 void handle_reply(evutil_socket_t fd, short what, void *arg);
 void handle_ur_reply(evutil_socket_t fd, short what, void *arg);
@@ -119,6 +123,8 @@ bool parse_cmd(int argc, char **argv) {
   return true;
 }
 
+/* --------------- Header --------------- */
+
 class Client;
 class Channel {
   friend Client;
@@ -145,6 +151,31 @@ class Channel {
   MessageHeader recv_guidance(uint8_t *buf, size_t max_size);
 };
 
+// value in KV pair is constant
+class KeyGenerator {
+  std::random_device r;
+  std::mt19937 gen;
+  std::uniform_int_distribution<uint32_t> distrib;
+  std::vector<uint32_t> seq;
+  std::atomic<size_t> rindex = 0;
+  size_t max = 0xfffffffful;
+
+public:
+  KeyGenerator(uint32_t rangeR, size_t nums): gen(r()), distrib(1, rangeR) {
+    seq.reserve(nums);
+    for (size_t i = 0; i < nums; i++) {
+      uint32_t rn = distrib(gen);
+      double factor = ((double)rn/rangeR);
+      // printf("rn %u, factor %lf\n", rn, factor);
+      seq.emplace_back(max * factor);
+    }
+  }
+
+  uint32_t generate() {
+    return seq[rindex++];
+  }
+};
+
 class Client {
   int m_id = 0;
   event_base *m_ev_base;
@@ -154,6 +185,8 @@ class Client {
   std::vector<Channel> m_channel;
   uint8_t *m_data = nullptr;
   size_t m_data_size = 0;
+
+
 
   int max_replica_id = 3;
   int quorum = 0;
@@ -227,25 +260,25 @@ class Client {
   }
 
   bool check_guidance_quorum() {
-    if (m_leading_guidance.term == 0) {
+    if (m_leading_guidance.epoch == 0) {
       LOG_F(WARNING, "client %d doesn't have leading guidance", m_id);
       return false;
     }
     std::map<uint64_t, int> term_votes;
     for (auto &guide : m_one_turn_collection) {
-      term_votes[guide.term] += 1;
-      LOG_F(INFO, "add 1 vote to term %zu, curr votes: %d", guide.term, term_votes[guide.term]);
+      term_votes[guide.epoch] += 1;
+      LOG_F(INFO, "add 1 vote to epoch %zu, curr votes: %d", guide.epoch, term_votes[guide.epoch]);
     }
     auto vote = term_votes.rbegin();
     if ((*vote).first == 0) {
       return false;
     }
-    if (m_leading_guidance.term < (*vote).first) {
-      LOG_F(WARNING, "leading term %zu is smaller than other replica's %zu",
-            m_leading_guidance.term, (*vote).first);
+    if (m_leading_guidance.epoch < (*vote).first) {
+      LOG_F(WARNING, "leading epoch %zu is smaller than other replica's %zu",
+            m_leading_guidance.epoch, (*vote).first);
       return false;
     }
-    if (m_leading_guidance.term > (*vote).first) {
+    if (m_leading_guidance.epoch > (*vote).first) {
       LOG_F(WARNING, "other replicas not reply proper guidance");
       return false;
     }
@@ -257,12 +290,12 @@ class Client {
   }
 
   bool has_uniform_guidance() {
-    uint64_t fe = m_one_turn_collection[0].term;
+    uint64_t fe = m_one_turn_collection[0].epoch;
     if (fe == 0) {
       return false;
     }
     for (auto &guide : m_one_turn_collection) {
-      if (guide.term != fe) {
+      if (guide.epoch != fe) {
         return false;
       }
     }
@@ -273,15 +306,15 @@ class Client {
     uint64_t max = 0;
     int max_idx = 0;
     for (size_t i = 0; i < m_one_turn_collection.size(); i++) {
-      if (m_one_turn_collection[i].term > max) {
-        max = m_one_turn_collection[i].term;
+      if (m_one_turn_collection[i].epoch > max) {
+        max = m_one_turn_collection[i].epoch;
         max_idx = i;
       }
     }
 
     int count = 0;
     for (size_t i = 0; i < m_one_turn_collection.size(); i++) {
-      if (m_one_turn_collection[i].term == max) {
+      if (m_one_turn_collection[i].epoch == max) {
         count += 1;
       }
     }
@@ -304,6 +337,9 @@ class Client {
   void one_send();
   void handle_reply(Channel *chan, int type, uint8_t *msg_buf, size_t msg_size);
   void handle_ur_reply(Channel *conn, int type, uint8_t *msg_buf, size_t msg_size);
+
+  ClientRawMessage &construct_client_message(uint8_t *c_buf, int type, uint8_t *value,
+                                             size_t value_size);
 };
 
 /* --------------- Channel --------------- */
@@ -363,14 +399,14 @@ void Channel::send_get_guidance(uint8_t *buf, size_t size) {
 
 /* --------------- Client --------------- */
 
-ClientRawMessage &construct_client_message(uint8_t *c_buf, int type, uint8_t *value,
-                                           size_t value_size) {
+ClientRawMessage &Client::construct_client_message(uint8_t *c_buf, int type, uint8_t *value,
+                                                   size_t value_size) {
   size_t op_size = (type == 0) ? sizeof(OperationRaw) : sizeof(OperationRaw) + value_size;
   ClientRawMessage &msg_raw = *reinterpret_cast<ClientRawMessage *>(c_buf);
   msg_raw.header.type = MessageType::MsgTypeClient;
   msg_raw.header.size = sizeof(ClientRawMessage) + op_size;
-  msg_raw.term = 1;
-  msg_raw.key_hash = 0x4199;
+  msg_raw.epoch = m_leading_guidance.epoch;
+  msg_raw.key_hash = g_key_mgr->generate();
   msg_raw.data_size = op_size;
 
   OperationRaw &op = msg_raw.get_op();
@@ -406,8 +442,8 @@ void Client::one_send() {
     LOG_F(FATAL, "don't have replicable node for key 0x%lx, pos: 0x%x", msg.key_hash,
           calc_key_pos(msg.key_hash));
   }
-  LOG_F(INFO, "client %d send operation %d to replica %d, pos 0x%x, size: %u", m_id, op.op_type,
-        rid, calc_key_pos(msg.key_hash), msg.header.size);
+  LOG_F(INFO, "client %d send operation %d, 0x%lx to replica %d, pos 0x%x, size: %u", m_id,
+        op.op_type, msg.key_hash, rid, calc_key_pos(msg.key_hash), msg.header.size);
 
   m_channel[rid].send(buf, msg.header.size);
 #endif
@@ -652,6 +688,8 @@ int main(int argc, char **argv) {
 
   g_latency_gauge.resize(cfg_total_clients);
   int thread_nums = cfg_total_clients / cfg_client_grouping;
+
+  g_key_mgr = new KeyGenerator(100, cfg_msg_nums);
 
   Gauge gauge;
   gauge.set_probe1();

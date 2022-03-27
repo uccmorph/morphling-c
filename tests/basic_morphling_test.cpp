@@ -44,7 +44,7 @@ ClientRawMessage& new_client_message(std::string &value_str) {
   ClientRawMessage &msg_raw = *reinterpret_cast<ClientRawMessage *>(cmsg_buf);
   msg_raw.header.type = MessageType::MsgTypeClient;
   msg_raw.header.size = sizeof(ClientRawMessage) + op_size;
-  msg_raw.term = 1;
+  msg_raw.epoch = 1;
   msg_raw.key_hash = 0x4199;
   msg_raw.data_size = op_size;
 
@@ -88,7 +88,7 @@ TEST(BasicMorphlingTest, ClientOperationTest) {
     for (auto &raw_msg : mock_trans->sent_msgs) {
       AppendEntriesRawMessage *msg = (AppendEntriesRawMessage *)raw_msg.data();
       EXPECT_EQ(msg->from, self);
-      EXPECT_EQ(msg->term, 1);
+      EXPECT_EQ(msg->epoch, 1);
       EXPECT_EQ(msg->entry.index, 1);
       EXPECT_EQ(msg->entry.get_op().value_size, data_size);
       print_buffer(msg->entry.get_op().get_value_buf(), msg->entry.get_op().value_size);
@@ -130,7 +130,7 @@ TEST(BasicMorphlingTest, RecvMessage) {
     for (auto &raw_msg : mock_trans->sent_msgs) {
       AppendEntriesRawMessage *msg = (AppendEntriesRawMessage *)raw_msg.data();
       EXPECT_EQ(msg->from, self);
-      EXPECT_EQ(msg->term, 1);
+      EXPECT_EQ(msg->epoch, 1);
       EXPECT_EQ(msg->entry.index, 1);
       EXPECT_EQ(msg->entry.get_op().value_size, data_size);
       print_buffer(msg->entry.get_op().get_value_buf(), msg->entry.get_op().value_size);

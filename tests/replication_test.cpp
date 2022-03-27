@@ -8,7 +8,7 @@ TEST(ReplicationTest, NewEntryTest) {
   srand(time(0));
   for (int id = 0; id < 3; id++) {
     auto gid = rand() % 100;
-    auto term = rand() % 100;
+    auto epoch = rand() % 100;
     std::vector<AppendEntriesRawMessage *> out_msgs;
     message_cb_t<AppendEntriesRawMessage> cb =
         [&out_msgs](AppendEntriesRawMessage &msg, int to) -> bool {
@@ -38,12 +38,12 @@ TEST(ReplicationTest, NewEntryTest) {
     smr.set_cb(cb, nullptr, nullptr);
     smr.set_pre_alloc_ae_cb(ae_cb);
     smr.set_gid(gid);
-    smr.set_term(term);
+    smr.set_term(epoch);
 
     ClientRawMessage *msg =
         (ClientRawMessage
              *)new uint8_t[sizeof(ClientRawMessage) + op_data.size()];
-    msg->term = term;
+    msg->epoch = epoch;
     msg->key_hash = 0x4199;
     msg->data_size = op_data.size();
     std::copy(op_data.begin(), op_data.end(), msg->get_op_buf());
@@ -53,13 +53,13 @@ TEST(ReplicationTest, NewEntryTest) {
     EXPECT_EQ(out_msgs.size(), 2);
     for (int i = 0; i < 2; i++) {
       EXPECT_EQ(out_msgs[i]->from, id);
-      EXPECT_EQ(out_msgs[i]->term, term);
+      EXPECT_EQ(out_msgs[i]->epoch, epoch);
       EXPECT_EQ(out_msgs[i]->group_id, gid);
       EXPECT_EQ(out_msgs[i]->prev_index, 0);
       EXPECT_EQ(out_msgs[i]->prev_term, 0);
 
       EXPECT_EQ(out_msgs[i]->entry.index, 1);
-      EXPECT_EQ(out_msgs[i]->entry.term, term);
+      EXPECT_EQ(out_msgs[i]->entry.epoch, epoch);
       EXPECT_EQ(out_msgs[i]->entry.data_size, op_data.size());
     }
 
@@ -69,13 +69,13 @@ TEST(ReplicationTest, NewEntryTest) {
     EXPECT_EQ(out_msgs.size(), 4);
     for (int i = 2; i < 4; i++) {
       EXPECT_EQ(out_msgs[i]->from, id);
-      EXPECT_EQ(out_msgs[i]->term, term);
+      EXPECT_EQ(out_msgs[i]->epoch, epoch);
       EXPECT_EQ(out_msgs[i]->group_id, gid);
       EXPECT_EQ(out_msgs[i]->prev_index, 1);
-      EXPECT_EQ(out_msgs[i]->prev_term, term);
+      EXPECT_EQ(out_msgs[i]->prev_term, epoch);
 
       EXPECT_EQ(out_msgs[i]->entry.index, 2);
-      EXPECT_EQ(out_msgs[i]->entry.term, term);
+      EXPECT_EQ(out_msgs[i]->entry.epoch, epoch);
       EXPECT_EQ(out_msgs[i]->entry.data_size, op_data.size());
     }
 
@@ -92,7 +92,7 @@ TEST(ReplicationTest, HandelAppendEntryTest) {
     AppendEntriesRawMessage *ae_raw =
         (AppendEntriesRawMessage
              *)new uint8_t[sizeof(AppendEntriesRawMessage) + op_data.size()];
-    ae_raw->entry.term = 1;
+    ae_raw->entry.epoch = 1;
     ae_raw->entry.index = i + 1;
     ae_raw->entry.data_size = op_data.size();
     std::copy(op_data.begin(), op_data.end(), ae_raw->entry.get_op_buf());
@@ -100,7 +100,7 @@ TEST(ReplicationTest, HandelAppendEntryTest) {
     ae_raw->from = 0;
     ae_raw->group_id = 42;
     ae_raw->commit = 0;
-    ae_raw->term = 1;
+    ae_raw->epoch = 1;
     ae_raw->prev_term = uint64_t((i == 0) ? 0 : 1);
     ae_raw->prev_index = uint64_t(i);
 
@@ -135,7 +135,7 @@ TEST(ReplicationTest, HandelAppendEntryTest) {
     EXPECT_TRUE(item.success);
     EXPECT_EQ(item.group_id, 42);
     EXPECT_EQ(item.index, expect_idx);
-    EXPECT_EQ(item.term, 1);
+    EXPECT_EQ(item.epoch, 1);
     expect_idx += 1;
   }
 }
@@ -200,8 +200,8 @@ TEST(ReplicationTest, HandelAppendEntryReplyTest) {
 
   uint64_t index = 1;
   for (auto &item : out_entries) {
-    printf("to apply entry term: %zu, index: %zu\n", item.term, item.index);
-    EXPECT_EQ(item.term, 2);
+    printf("to apply entry epoch: %zu, index: %zu\n", item.epoch, item.index);
+    EXPECT_EQ(item.epoch, 2);
     EXPECT_EQ(item.index, index);
     index += 1;
   }

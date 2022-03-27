@@ -14,6 +14,7 @@ enum MessageType {
   MsgTypeClientReply,
   MsgTypeGuidance,
   MsgTypeGetGuidance,
+  MsgTypeGossip,
 };
 
 struct Message {
@@ -83,7 +84,7 @@ struct OperationRaw {
 };
 
 struct EntryRaw {
-  uint64_t term = 0;
+  uint64_t epoch = 0;
   uint64_t index = 0;
   size_t data_size;
 
@@ -100,7 +101,7 @@ struct EntryRaw {
 };
 
 struct Entry {
-  uint64_t term = 0;
+  uint64_t epoch = 0;
   uint64_t index = 0;
   std::vector<uint8_t> data;
   Entry() {}
@@ -108,7 +109,7 @@ struct Entry {
   Entry(uint8_t *buf, size_t size): data(buf, buf + size) {}
 
   std::string debug() {
-    return "term: " + std::to_string(term) + ", index: " + std::to_string(index) +
+    return "epoch: " + std::to_string(epoch) + ", index: " + std::to_string(index) +
            ", data size: " + std::to_string(data.size());
   }
 };
@@ -117,7 +118,7 @@ struct AppendEntriesRawMessage {
   MessageHeader header;
 
   int from = 0;
-  uint64_t term = 0;
+  uint64_t epoch = 0;
   uint64_t prev_term = 0;
   uint64_t prev_index = 0;
   uint64_t commit = 0;
@@ -128,13 +129,13 @@ struct AppendEntriesRawMessage {
   std::string debug() {
     std::stringstream ss;
     ss << "from: " << from << ", " <<
-    "term: " << term << ", " <<
+    "epoch: " << epoch << ", " <<
     "prev_term: " << prev_term << "," <<
     "prev_index: " << prev_index << "," <<
     "commit: " << commit << "," <<
     "group_id: " << group_id << "," <<
     "entry index: " << entry.index << ", " <<
-    "entry term: " << entry.term << ", " <<
+    "entry epoch: " << entry.epoch << ", " <<
     "entry data size: " << entry.data_size;
 
     return std::move(ss.str());
@@ -143,7 +144,7 @@ struct AppendEntriesRawMessage {
 
 // struct AppendEntriesMessage {
 //   int from = 0;
-//   uint64_t term = 0;
+//   uint64_t epoch = 0;
 
 //   uint64_t prev_term = 0;
 //   uint64_t prev_index = 0;
@@ -154,13 +155,13 @@ struct AppendEntriesRawMessage {
 //   std::string debug() {
 //     std::stringstream ss;
 //     ss << "from: " << from << ", " <<
-//     "term: " << term << ", " <<
+//     "epoch: " << epoch << ", " <<
 //     "prev_term: " << prev_term << "," <<
 //     "prev_index: " << prev_index << "," <<
 //     "commit: " << commit << "," <<
 //     "group_id: " << group_id << "," <<
 //     "entry index: " << entry.index << ", " <<
-//     "entry term: " << entry.term << ", " <<
+//     "entry epoch: " << entry.epoch << ", " <<
 //     "entry data size: " << entry.data.size();
 
 //     return std::move(ss.str());
@@ -171,7 +172,7 @@ struct AppendEntriesReplyMessage {
   MessageHeader header;
 
   int from;
-  uint64_t term;
+  uint64_t epoch;
   bool success;
   uint64_t group_id;
   uint64_t index;
@@ -179,7 +180,7 @@ struct AppendEntriesReplyMessage {
 
 // struct ClientMessage {
 //   // Guidance guidance;
-//   uint64_t term;
+//   uint64_t epoch;
 //   uint64_t key_hash;
 //   std::vector<uint8_t> op;  // contains full OperationRaw
 // };
@@ -187,7 +188,7 @@ struct AppendEntriesReplyMessage {
 struct ClientRawMessage {
   MessageHeader header;
 
-  uint64_t term;
+  uint64_t epoch;
   uint64_t key_hash;
   size_t data_size;
 
@@ -231,6 +232,18 @@ struct GuidanceMessage {
   int from;
   int votes;
   Guidance guide;
+};
+
+struct GossipMessage {
+  MessageHeader header;
+  int from;
+  Guidance guide;
+  uint64_t load;
+
+  GossipMessage() {
+    header.type = MessageType::MsgTypeGossip;
+    header.size = sizeof(GossipMessage);
+  }
 };
 
 // struct GenericMessage {

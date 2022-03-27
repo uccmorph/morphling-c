@@ -7,6 +7,53 @@ int calc_key_pos(uint64_t key_hash) {
   return (key_hash & DEFAULT_KEY_MASK) >> DEFAULT_MASK_OFFSET;
 }
 
+LoadMetric::LoadMetric() {
+  m_counts.resize(DEFAULT_KEY_SPACE);
+}
+
+void LoadMetric::change(int rangel, int ranger) {
+  m_range.first = rangel;
+  m_range.second = ranger;
+  if (rangel > ranger) {
+    for (int i = rangel; i < DEFAULT_KEY_SPACE; i++) {
+      m_counts[i] = 0;
+    }
+    for (int i = 0; i < ranger; i++) {
+      m_counts[i] = 0;
+    }
+  } else {
+    for (int i = rangel; i <= ranger; i++) {
+      m_counts[i] = 0;
+    }
+  }
+}
+
+void LoadMetric::add(int id) {
+  m_counts[id] += 1;
+}
+
+void LoadMetric::clear(int id) {
+  m_counts[id] = 0;
+}
+
+uint64_t LoadMetric::total() {
+  uint64_t res = 0;
+  if (m_range.first > m_range.second) {
+    for (int i = m_range.first; i < DEFAULT_KEY_SPACE; i++) {
+      res += m_counts[i];
+    }
+    for (int i = 0; i < m_range.second; i++) {
+      res += m_counts[i];
+    }
+  } else {
+    for (int i = m_range.first; i <= m_range.second; i++) {
+      res += m_counts[i];
+    }
+  }
+
+  return res;
+}
+
 class NullTransport : public Transport {
  public:
   ~NullTransport() {}
@@ -23,6 +70,7 @@ Morphling::Morphling(int id, std::vector<int> &peers)
   for (int id : peers) {
     m_network.emplace(id, std::make_unique<NullTransport>());
     m_prealloc_ae_bcast.try_emplace(id);
+    m_gossip_count_down.try_emplace(id);
   }
 
   message_cb_t<AppendEntriesRawMessage> ae_cb =
@@ -76,16 +124,18 @@ Morphling::Morphling(int id, std::vector<int> &peers)
   for (int i = 0; i < DEFAULT_KEY_SPACE; i++) {
     auto &smr = m_smrs.emplace_back(id, m_peers);
     smr.set_gid(i);
-    smr.set_term(m_guide.term);
+    smr.set_term(m_guide.epoch);
     smr.set_cb(ae_cb, aer_cb, apply_cb);
     smr.set_pre_alloc_ae_cb(alloc_ae_cb);
   }
+
+  m_load_counter.change(m_guide.cluster[m_me].start_pos, m_guide.cluster[m_me].end_pos);
 }
 
 Morphling::~Morphling() {}
 
 void Morphling::init_local_guidance(int key_space) {
-  m_guide.term = 1;
+  m_guide.epoch = m_me;
   if (m_peers.size() != ReplicaNumbers) {
     LOG_F(ERROR, "peers size %zu should be equal to %d", m_peers.size(),
           ReplicaNumbers);
@@ -106,8 +156,8 @@ void Morphling::init_local_guidance(int key_space) {
   }
 }
 
-bool Morphling::is_valid_guidance(uint64_t term) {
-  if (m_guide.term != term) {
+bool Morphling::is_valid_guidance(uint64_t epoch) {
+  if (m_guide.epoch != epoch) {
     return false;
   }
   return true;
@@ -124,6 +174,69 @@ OperationRaw &Morphling::parse_operation(std::vector<uint8_t> &data) {
 
   return op_raw;
 }
+
+void Morphling::increment_epoch() {
+  auto new_epoch = m_guide.epoch;
+  new_epoch = (new_epoch + ReplicaNumbers - 1) / ReplicaNumbers * ReplicaNumbers + m_me;
+
+  m_guide.epoch = new_epoch;
+}
+
+int Morphling::guidance_range_size(int id) {
+  return (m_guide.cluster[id].end_pos - m_guide.cluster[id].start_pos + DEFAULT_KEY_SPACE) %
+         DEFAULT_KEY_SPACE;
+}
+
+void Morphling::consistent_guidance_shifting(int type, int exclude_id) {
+  if (type == 1) {
+    increment_epoch();
+
+    // find left neighbor
+    int lneighbor = (exclude_id + ReplicaNumbers - 1) % ReplicaNumbers;
+    while (true) {
+      if (m_guide.cluster[lneighbor].alive) {
+        break;
+      }
+      lneighbor = (lneighbor + ReplicaNumbers - 1) % ReplicaNumbers;
+      if (lneighbor == exclude_id) {
+        LOG_F(FATAL, "no alive left neighbor for %d", exclude_id);
+      }
+    }
+
+    // find right neighbot
+    int rneighbor = (exclude_id + 1) % ReplicaNumbers;
+    while (true) {
+      if (m_guide.cluster[rneighbor].alive) {
+        break;
+      }
+      rneighbor = (rneighbor + 1) % ReplicaNumbers;
+      if (rneighbor == exclude_id) {
+        LOG_F(FATAL, "no alive right neighbor for %d", exclude_id);
+      }
+    }
+
+    auto dead_range = ((m_guide.cluster[exclude_id].end_pos -
+                        m_guide.cluster[exclude_id].start_pos + DEFAULT_KEY_SPACE) %
+                       DEFAULT_KEY_SPACE) +
+                      1;
+    auto left_parts = dead_range / 2;
+    auto right_parts = dead_range - left_parts;
+    m_guide.cluster[lneighbor].end_pos =
+        (m_guide.cluster[lneighbor].end_pos + left_parts) % DEFAULT_KEY_SPACE;
+    m_guide.cluster[rneighbor].start_pos =
+        (m_guide.cluster[rneighbor].start_pos - right_parts) % DEFAULT_KEY_SPACE;
+
+    m_guide.cluster[exclude_id].start_pos = 0;
+    m_guide.cluster[exclude_id].end_pos = 0;
+    m_guide.cluster[exclude_id].alive = false;
+    m_guide.alive_num -= 1;
+    return;
+  } else if (type == 2) {
+    return;
+  }
+}
+
+// ------------------- public member funcitons ------------------------
 
 void Morphling::handle_message(MessageHeader &header, TransPtr &trans) {
   LOG_F(INFO, "handle new message, type: %d", header.type);
@@ -152,6 +265,12 @@ void Morphling::handle_message(MessageHeader &header, TransPtr &trans) {
     assert(header.size < 128);
     trans->recv(drain_buf, header.size);
     reply_guidance(trans);
+  } else if (header.type == MessageType::MsgTypeGossip) {
+    GossipMessage gossip;
+    trans->recv((uint8_t *)&gossip, header.size);
+    LOG_F(WARNING, "recv gossip from %d, load: %zu, guide: %s", gossip.from, gossip.load,
+          gossip.guide.to_string().c_str());
+    handle_gossip(gossip);
   } else {
     LOG_F(WARNING, "don't know how to handle msg type: %d", header.type);
     uint8_t drain_buf[16];
@@ -162,7 +281,7 @@ void Morphling::handle_message(MessageHeader &header, TransPtr &trans) {
 void Morphling::handle_operation(ClientRawMessage &msg, TransPtr &trans) {
   OperationRaw *op = (OperationRaw *)msg.get_op_buf();
 
-  if (!is_valid_guidance(msg.term)) {
+  if (!is_valid_guidance(msg.epoch)) {
     reply_client(op->op_type, msg.key_hash, false, trans);
     return;
   }
@@ -177,7 +296,8 @@ void Morphling::handle_operation(ClientRawMessage &msg, TransPtr &trans) {
 }
 
 void Morphling::handle_append_entries(AppendEntriesRawMessage &msg) {
-  if (!is_valid_guidance(msg.term)) {
+  m_gossip_count_down[msg.from] = 0;
+  if (!is_valid_guidance(msg.epoch)) {
     reply_guidance(m_network[msg.from]);
     return;
   }
@@ -186,12 +306,21 @@ void Morphling::handle_append_entries(AppendEntriesRawMessage &msg) {
 }
 
 void Morphling::handle_append_entries_reply(AppendEntriesReplyMessage &msg) {
-  if (!is_valid_guidance(msg.term)) {
+  m_gossip_count_down[msg.from] = 0;
+  if (!is_valid_guidance(msg.epoch)) {
     reply_guidance(m_network[msg.from]);
     return;
   }
   LOG_F(INFO, "recv AppenEntriesReplyMessage, index: %zu", msg.index);
   m_smrs[msg.group_id].handle_append_entries_reply(msg);
+}
+
+void Morphling::handle_gossip(GossipMessage &msg) {
+  m_gossip_count_down[msg.from] = 0;
+  if (msg.guide.epoch > m_guide.epoch) {
+    m_guide = msg.guide;
+    LOG_F(WARNING, "change guidance to %s", m_guide.to_string().c_str());
+  }
 }
 
 void Morphling::reply_guidance(TransPtr &trans) {
@@ -233,7 +362,30 @@ void Morphling::reply_client(int rw_type, uint64_t key_hash, bool success,
     reply.header.type = MessageType::MsgTypeClientReply;
     reply.header.size = sizeof(ClientReplyRawMessage);
   }
-  trans->send(m_prealloc_client_reply.buf, reply.header.size);
+  trans->send((uint8_t *)&reply, reply.header.size);
+}
+
+void Morphling::gossip() {
+  for (auto &trans_pair : m_network) {
+    if (trans_pair.first == m_me) {
+      continue;
+    }
+    m_prealloc_gossip.from = m_me;
+    m_prealloc_gossip.guide = m_guide;
+    m_prealloc_gossip.load = m_load_counter.total();
+
+    trans_pair.second->send((uint8_t *)&m_prealloc_gossip, m_prealloc_gossip.header.size);
+
+    m_gossip_count_down[trans_pair.first] += 1;
+    if (m_gossip_count_down[trans_pair.first] == Morphling::TIMEOUT_TICKS) {
+      LOG_F(WARNING, "replica %d is timeout, should be removed from guidance", trans_pair.first);
+      // make sure guidance change only happens once
+      if (m_guide.cluster[trans_pair.first].alive) {
+        consistent_guidance_shifting(1, trans_pair.first);
+        LOG_F(INFO, "after guidance shifting: %s", m_guide.to_string().c_str());
+      }
+    }
+  }
 }
 
 Guidance &Morphling::get_guidance() { return m_guide; }

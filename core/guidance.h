@@ -63,7 +63,7 @@ struct Guidance {
 #ifdef CONFIG_GUIDANCE_CHECKSUM
   uint64_t checksum = 0;
 #endif
-  uint64_t term = 0;
+  uint64_t epoch = 0;
   // uint8_t alive_num;
   // uint8_t cluster_size;
   // 0x000000FF for cluster_size, 0x0000FF00 for alive_num
@@ -85,7 +85,7 @@ struct Guidance {
 
   std::string to_string() {
     std::stringstream ss;
-    ss << "term: " << term << ", "
+    ss << "epoch: " << epoch << ", "
        << "cluster size: " << cluster_size << ", "
        << "alive: " << alive_num << std::endl;
 

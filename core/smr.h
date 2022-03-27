@@ -27,8 +27,8 @@ class SMRLog {
   SMRLog();
 
   uint64_t append(Entry &e);
-  // uint64_t append(std::vector<uint8_t> &data, uint64_t term);
-  uint64_t append(uint8_t *data, size_t data_size, uint64_t term);
+  // uint64_t append(std::vector<uint8_t> &data, uint64_t epoch);
+  uint64_t append(uint8_t *data, size_t data_size, uint64_t epoch);
   // truncate including t_idx
   void truncate(uint64_t t_idx);
 
@@ -108,7 +108,7 @@ public:
               apply_cb_t apply_cb);
   void set_pre_alloc_ae_cb(ae_cb_t ae_cb);
   void set_gid(uint64_t gid);
-  void set_term(uint64_t term);
+  void set_term(uint64_t epoch);
 
   // uint64_t handle_operation(ClientMessage &msg);
   uint64_t handle_operation(ClientRawMessage &msg);
