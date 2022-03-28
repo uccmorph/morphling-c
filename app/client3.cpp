@@ -34,7 +34,8 @@ std::vector<int> cfg_replica_port;
 std::vector<int> cfg_guidance_port;
 bool cfg_is_read = false;
 int cfg_msg_nums = 5;
-bool cfg_unreplicated_read = false;
+bool cfg_unreplicated_read = false; // single node
+bool cfg_replicated_read = false; // Raft-like
 
 int cfg_value_size = 100;
 static uint8_t *g_value;
@@ -44,7 +45,8 @@ std::atomic_int g_sent_nums(0);
 std::vector<Gauge> g_latency_gauge;
 
 class KeyGenerator;
-KeyGenerator *g_key_mgr;
+class IKeyGenerator;
+IKeyGenerator *g_key_mgr;
 
 void handle_reply(evutil_socket_t fd, short what, void *arg);
 void handle_ur_reply(evutil_socket_t fd, short what, void *arg);
@@ -52,11 +54,15 @@ void handle_guidance_reply(evutil_socket_t fd, short what, void *arg);
 
 bool parse_cmd(int argc, char **argv) {
   int has_default = 0;
-  static struct option long_options[] = {
-      {"total", required_argument, nullptr, 0},    {"group", required_argument, nullptr, 0},
-      {"replicas", required_argument, nullptr, 0}, {"ro", no_argument, &has_default, 0},
-      {"vs", required_argument, nullptr, 0},       {"nums", required_argument, nullptr, 0},
-      {"ur", no_argument, &has_default, 0},        {0, 0, 0, 0}};
+  static struct option long_options[] = {{"total", required_argument, nullptr, 0},
+                                         {"group", required_argument, nullptr, 0},
+                                         {"replicas", required_argument, nullptr, 0},
+                                         {"ro", no_argument, &has_default, 0},
+                                         {"vs", required_argument, nullptr, 0},
+                                         {"nums", required_argument, nullptr, 0},
+                                         {"ur", no_argument, &has_default, 0},
+                                         {"rr", no_argument, &has_default, 0},
+                                         {0, 0, 0, 0}};
 
   int c = 0;
   bool fail = false;
@@ -96,6 +102,10 @@ bool parse_cmd(int argc, char **argv) {
           case 6:
             cfg_unreplicated_read = true;
             break;
+
+          case 7:
+            cfg_replicated_read = true;
+            break;
         }
 
         break;
@@ -120,6 +130,8 @@ bool parse_cmd(int argc, char **argv) {
   LOG_F(1, "cfg_is_read = %d", cfg_is_read);
   LOG_F(1, "cfg_value_size = %d", cfg_value_size);
   LOG_F(1, "cfg_msg_nums = %d", cfg_msg_nums);
+  LOG_F(1, "cfg_unreplicated_read = %d", cfg_unreplicated_read);
+  LOG_F(1, "cfg_replicated_read = %d", cfg_replicated_read);
   return true;
 }
 
@@ -152,7 +164,13 @@ class Channel {
 };
 
 // value in KV pair is constant
-class KeyGenerator {
+class IKeyGenerator {
+public:
+  virtual ~IKeyGenerator() {}
+  virtual uint32_t generate() = 0;
+};
+
+class KeyGenerator: public IKeyGenerator {
   std::random_device r;
   std::mt19937 gen;
   std::uniform_int_distribution<uint32_t> distrib;
@@ -171,8 +189,16 @@ public:
     }
   }
 
-  uint32_t generate() {
+  virtual uint32_t generate() {
     return seq[rindex++];
+  }
+};
+
+class KeyGeneratorConst: public IKeyGenerator {
+public:
+  ~KeyGeneratorConst() {}
+  virtual uint32_t generate() {
+    return 0x42112233;
   }
 };
 
@@ -428,11 +454,22 @@ void Client::one_send() {
     return;
   }
   uint8_t buf[2048];
-  gauge->set_probe1();
 
 #if 1
+  int rw_type = 0;
+  if (cfg_replicated_read) {
+    rw_type = 2;
+  } else if (cfg_unreplicated_read) {
+    rw_type = 0;
+  } else {
+    if (cfg_is_read) {
+      rw_type = 0;
+    } else {
+      rw_type = 1;
+    }
+  }
   ClientRawMessage &msg =
-      construct_client_message(buf, cfg_is_read ? 0 : 1, g_value, cfg_value_size);
+      construct_client_message(buf, rw_type, g_value, cfg_value_size);
   OperationRaw &op = msg.get_op();
   assert(msg.header.size < 2048);
 
@@ -445,6 +482,7 @@ void Client::one_send() {
   LOG_F(INFO, "client %d send operation %d, 0x%lx to replica %d, pos 0x%x, size: %u", m_id,
         op.op_type, msg.key_hash, rid, calc_key_pos(msg.key_hash), msg.header.size);
 
+  gauge->set_probe1();
   m_channel[rid].send(buf, msg.header.size);
 #endif
 
@@ -493,6 +531,7 @@ void Client::handle_reply(Channel *chan, int type, uint8_t *msg_buf, size_t msg_
       if (check_guidance_quorum()) {
         reset_turn_collection();
         status = Client::status_t::idle;
+        gauge->set_probe2();
       }
     }
   } else if (type == MsgTypeClientReply) {
@@ -504,6 +543,7 @@ void Client::handle_reply(Channel *chan, int type, uint8_t *msg_buf, size_t msg_
       if (check_guidance_quorum()) {
         reset_turn_collection();
         status = Client::status_t::idle;
+        gauge->set_probe2();
       } else {
         status = Client::status_t::waiting_guidance;
       }
@@ -511,7 +551,7 @@ void Client::handle_reply(Channel *chan, int type, uint8_t *msg_buf, size_t msg_
       reset_turn_collection();
       status = Client::status_t::idle;
       gauge->set_probe2();
-      gauge->instant_time_us();
+      // gauge->instant_time_us();
     }
     LOG_F(INFO, "status: %d, success: %d, data size: %zu", status, msg.success, msg.data_size);
   } else {
@@ -529,6 +569,7 @@ void Client::handle_ur_reply(Channel *chan, int type, uint8_t *msg_buf, size_t m
 
     if (status == Client::status_t::reading) {
       status = Client::status_t::idle;
+      gauge->set_probe2();
     } else if (status == Client::status_t::writing) {
       LOG_F(ERROR, "unreplicated read won't have writing");
     }
@@ -611,7 +652,7 @@ void thread_run(int tid) {
     c.set_data(g_value, cfg_value_size);
     c.set_channel_info(cfg_replica_addr, cfg_replica_port);
     c.gauge = &g_latency_gauge[tid * cfg_client_grouping + i];
-    c.gauge->set_disable(true);
+    // c.gauge->set_disable(false);
     c.build_comm();
   }
 
@@ -689,8 +730,10 @@ int main(int argc, char **argv) {
   g_latency_gauge.resize(cfg_total_clients);
   int thread_nums = cfg_total_clients / cfg_client_grouping;
 
-  g_key_mgr = new KeyGenerator(100, cfg_msg_nums);
-
+  g_key_mgr = new KeyGenerator(3, cfg_msg_nums);
+  if (cfg_unreplicated_read) {
+    g_key_mgr = new KeyGeneratorConst;
+  }
   Gauge gauge;
   gauge.set_probe1();
   std::vector<std::thread> threads;
@@ -702,7 +745,11 @@ int main(int argc, char **argv) {
           t_name += " " + std::to_string(tid);
           loguru::set_thread_name(t_name.c_str());
           ERROR_CONTEXT("parent context", loguru::get_thread_ec_handle());
+          Gauge pt_gauge;
+          pt_gauge.set_probe1();
           thread_run(tid);
+          pt_gauge.set_probe2();
+          pt_gauge.average_time_us();
         },
         i);
   }
@@ -713,4 +760,9 @@ int main(int argc, char **argv) {
 
   gauge.set_probe2();
   gauge.total_time_ms(cfg_msg_nums);
+
+  for (auto &cg : g_latency_gauge) {
+    printf("is disable: %d\n", cg.is_disable());
+    cg.average_time_us();
+  }
 }

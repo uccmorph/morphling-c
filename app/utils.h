@@ -35,6 +35,10 @@ public:
     measure_probe2.reserve(1000000);
   }
 
+  bool is_disable() {
+    return disable;
+  }
+
   size_t set_probe1() {
     if (disable) {
       return 0;
@@ -128,18 +132,28 @@ public:
     }
     size_t probes = measure_probe2.size() - m_last_calculate_idx;
     double acc = 0.0;
+    double max = 0.0;
+    double min = 1e9;
+
     for (size_t i = m_last_calculate_idx; i < measure_probe2.size(); i++) {
       auto diff = std::chrono::duration_cast<std::chrono::nanoseconds>(
                       measure_probe2[i] - measure_probe1[i])
                       .count();
       diff *= 1e-3;
       acc += diff;
+      if (max < diff) {
+        max = diff;
+      }
+      if (diff < min) {
+        min = diff;
+      }
     }
     if (probes > 0) {
       double time = acc / probes;
-      printf("[%s] %zu points, average time: %f us\n", m_title.c_str(), probes, time);
+      printf("[%s] %zu points, average time: %f us, min: %f us, max: %f us\n", m_title.c_str(), probes, time, min, max);
+      // printf("[%s] min: %f us, max: %f us\n", m_title.c_str(), min, max);
     } else {
-      printf("[%s] no probe points in these time\n", m_title.c_str());
+      // printf("[%s] no probe points in these time\n", m_title.c_str());
     }
     m_last_calculate_idx = measure_probe2.size();
   }

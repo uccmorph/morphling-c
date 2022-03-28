@@ -22,12 +22,14 @@ using namespace std::chrono;
 
 int cfg_loop_count = 10000;
 std::string dest_ip("127.0.0.1");
+int cfg_thread_nums = 5;
 
 bool parse_cmd(int argc, char **argv) {
   int has_default = 0;
   static struct option long_options[] = {
       {"lc", required_argument, nullptr, 0},
       {"dest", required_argument, nullptr, 0},
+      {"tnums", required_argument, nullptr, 0},
       {0, 0, 0, 0}};
 
   int c = 0;
@@ -46,6 +48,10 @@ bool parse_cmd(int argc, char **argv) {
 
           case 1:
             dest_ip = optarg;
+            break;
+
+          case 2:
+            cfg_thread_nums = std::stoi(optarg);
             break;
 
         }
@@ -203,9 +209,7 @@ public:
   }
 };
 
-int main(int argc, char **argv) {
-  parse_cmd(argc, argv);
-
+void sending() {
   int server_port = 40713;
 
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -226,4 +230,21 @@ int main(int argc, char **argv) {
   }
 
   gauge.average_time_us();
+}
+
+int main(int argc, char **argv) {
+  parse_cmd(argc, argv);
+
+  Gauge total;
+  total.set_probe1();
+  std::vector<std::thread> threads;
+  for (size_t i = 0; i < cfg_thread_nums; i++) {
+    threads.emplace_back(sending);
+  }
+
+  for (size_t i = 0; i < cfg_thread_nums; i++) {
+    threads[i].join();
+  }
+  total.set_probe2();
+  total.average_time_us();
 }

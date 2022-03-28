@@ -177,3 +177,91 @@ total time: 901.464700 ms, throughput: 33.279173 Kops
 ucc@desktop-8sjudi:~/code/morphling-c/build$ ./client-run.sh
 total time: 939.145000 ms, throughput: 31.943949 Kops
 ./client2 --total 12 --group 6 --ro --replicas 127.0.0.1,127.0.0.1,127.0.0.1 --vs 1000 --nums 30000 -v ERROR
+
+
+## 2022.3.28
+PCL VM
+replica machine: 8 core, 3 replicas
+client machine: 16 core, 2 machines
+
+There are case that GetGuidance will be dropped, see port 9996 on replica0
+yijian@kvs-server1:~$ ss -m -ua
+State     Recv-Q    Send-Q       Local Address:Port         Peer Address:Port   Process
+UNCONN    0         0            127.0.0.53%lo:domain            0.0.0.0:*
+         skmem:(r0,rb212992,t0,tb212992,f4096,w0,o0,bl0,d0)
+UNCONN    0         0                  0.0.0.0:9990              0.0.0.0:*
+         skmem:(r0,rb212992,t0,tb212992,f4096,w0,o0,bl0,d0)
+UNCONN    0         0                  0.0.0.0:9993              0.0.0.0:*
+         skmem:(r0,rb212992,t0,tb212992,f4096,w0,o0,bl0,d0)
+UNCONN    0         0                  0.0.0.0:9996              0.0.0.0:*
+         skmem:(r0,rb212992,t0,tb212992,f4096,w0,o0,bl0,d176294)
+UNCONN    0         0                  0.0.0.0:53986             0.0.0.0:*
+         skmem:(r0,rb212992,t0,tb212992,f0,w0,o0,bl0,d0)
+UNCONN    0         0                  0.0.0.0:40495             0.0.0.0:*
+         skmem:(r0,rb212992,t0,tb212992,f0,w0,o0,bl0,d0)
+
+
+./client2 --total 40 --group 2 --ro --ur --replicas 10.1.6.233,10.1.6.234,10.1.6.235 --vs 1000 --nums 200000 -v ERROR
+And, unreplicated case and achieve higher throughput:
+2 machine, 110 Kops
+
+./client2 --total 40 --group 2 --ro --replicas 10.1.6.233,10.1.6.234,10.1.6.235 --vs 1000 --nums 200000 -v ERROR
+Morphling can only achieve roughly 95 Kops.
+I'm not sure it's caused by udp dropping packets.
+
+Now the average handling time for operations can reach 10us, 100Kops is a reasonable throughput.
+Since if we run --ur cmd only on one client machine, the single machine measured throughput can be 70Kops,
+while in two-machine case each can donate 50Kops.
+So the limitation of one machine is almost reached.
+
+However, I have some new findings.
+When I try to make client machine at low loading, like
+./client2 --total 6 --group 3 --ro --replicas 10.1.6.233,10.1.6.234,10.1.6.235 --vs 1000 --nums 50000 -v ERROR
+then throughput becomes:
+yijian@kvs-backup:~/morphling-c/build$ ./client-run.sh
+[] 1 points, average time: 1916680.000000 us
+[] 1 points, average time: 1916705.000000 us
+total time: 1917.314920 ms, throughput: 26.078136 Kops
+yijian@kvs-backup:~/morphling-c/build$ ./client-run.sh
+[] 1 points, average time: 1950148.000000 us
+[] 1 points, average time: 1950219.000000 us
+total time: 1950.787711 ms, throughput: 25.630672 Kops
+
+multi-client-run is exactly doubling the single-case, to 52Kops:
+yijian@kvs-backup:~/morphling-c/build$ ./multi-client-run.sh
+[] 1 points, average time: 1776194.000000 us
+[] 1 points, average time: 1776365.000000 us
+total time: 1776.894731 ms, throughput: 28.138977 Kops
+yijian@kvs-backup:~/morphling-c/build$ [] 1 points, average time: 2063745.000000 us
+[] 1 points, average time: 2063722.000000 us
+total time: 2064.372459 ms, throughput: 24.220436 Kops
+
+And for unreplicated case, throghput becomes:
+yijian@kvs-backup:~/morphling-c/build$ ./client-run.sh
+[] 1 points, average time: 3116557.000000 us
+[] 1 points, average time: 3116682.000000 us
+total time: 3117.269371 ms, throughput: 16.039679 Kops
+yijian@kvs-backup:~/morphling-c/build$ ./client-run.sh
+[] 1 points, average time: 2831554.000000 us
+[] 1 points, average time: 2831630.000000 us
+total time: 2832.311392 ms, throughput: 17.653426 Kops
+
+multi-client-run is also doubling, to 32Kops:
+yijian@kvs-backup:~/morphling-c/build$ ./multi-client-run.sh
+[] 1 points, average time: 3113913.000000 us
+[] 1 points, average time: 3114059.000000 us
+total time: 3114.541468 ms, throughput: 16.053727 Kops
+yijian@kvs-backup:~/morphling-c/build$ [] 1 points, average time: 3160747.000000 us
+[] 1 points, average time: 3160848.000000 us
+total time: 3161.342327 ms, throughput: 15.816066 Kops
+
+And Raft,
+yijian@kvs-backup:~/morphling-c/build$ ./client-run.sh
+[] 1 points, average time: 5744718.000000 us, min: 5744718.000000 us, max: 5744718.000000 us
+[] 1 points, average time: 5744993.000000 us, min: 5744993.000000 us, max: 5744993.000000 us
+total time: 5745.440613 ms, throughput: 5.221532 Kops
+
+Raft is one third of unreplicated case.
+Also, raft has longer latency. 380us
+Morphling 170us
+unreplicated 110us

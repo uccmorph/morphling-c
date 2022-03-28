@@ -130,6 +130,8 @@ Morphling::Morphling(int id, std::vector<int> &peers)
   }
 
   m_load_counter.change(m_guide.cluster[m_me].start_pos, m_guide.cluster[m_me].end_pos);
+
+  LOG_F(WARNING, "morphling replica %d start, guidance %s", m_me, m_guide.to_string().c_str());
 }
 
 Morphling::~Morphling() {}
@@ -265,11 +267,10 @@ void Morphling::handle_message(MessageHeader &header, TransPtr &trans) {
     assert(header.size < 128);
     trans->recv(drain_buf, header.size);
     reply_guidance(trans);
+
   } else if (header.type == MessageType::MsgTypeGossip) {
     GossipMessage gossip;
     trans->recv((uint8_t *)&gossip, header.size);
-    LOG_F(WARNING, "recv gossip from %d, load: %zu, guide: %s", gossip.from, gossip.load,
-          gossip.guide.to_string().c_str());
     handle_gossip(gossip);
   } else {
     LOG_F(WARNING, "don't know how to handle msg type: %d", header.type);
@@ -319,6 +320,9 @@ void Morphling::handle_gossip(GossipMessage &msg) {
   m_gossip_count_down[msg.from] = 0;
   if (msg.guide.epoch > m_guide.epoch) {
     m_guide = msg.guide;
+    for (int i = 0; i < DEFAULT_KEY_SPACE; i++) {
+      m_smrs[i].set_term(m_guide.epoch);
+    }
     LOG_F(WARNING, "change guidance to %s", m_guide.to_string().c_str());
   }
 }
@@ -348,7 +352,7 @@ void Morphling::reply_client(int rw_type, uint64_t key_hash, bool success,
   reply.from = m_me;
   reply.key_hash = key_hash;
 
-  if (rw_type == 0) {  // for read
+  if (rw_type == 0 || rw_type == 2) {  // for read or replicated-read
     auto &value = m_storage[key_hash];
     size_t msg_size = sizeof(ClientReplyRawMessage) + value.size();
     assert(msg_size < m_prealloc_client_reply.size);
@@ -357,10 +361,12 @@ void Morphling::reply_client(int rw_type, uint64_t key_hash, bool success,
     reply.header.size = msg_size;
     std::copy(value.begin(), value.end(), reply.get_value_buf());
 
-    LOG_F(3, "reply client read, data size: %zu", value.size());
-  } else {
+    LOG_F(INFO, "reply client read, data size: %zu", value.size());
+  } else if (rw_type == 1) {
     reply.header.type = MessageType::MsgTypeClientReply;
     reply.header.size = sizeof(ClientReplyRawMessage);
+
+    LOG_F(INFO, "reply client write, success: %d", reply.success);
   }
   trans->send((uint8_t *)&reply, reply.header.size);
 }
@@ -382,6 +388,9 @@ void Morphling::gossip() {
       // make sure guidance change only happens once
       if (m_guide.cluster[trans_pair.first].alive) {
         consistent_guidance_shifting(1, trans_pair.first);
+        for (int i = 0; i < DEFAULT_KEY_SPACE; i++) {
+          m_smrs[i].set_term(m_guide.epoch);
+        }
         LOG_F(INFO, "after guidance shifting: %s", m_guide.to_string().c_str());
       }
     }

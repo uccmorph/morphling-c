@@ -73,7 +73,7 @@ struct MessageHeader {
 
 // pack/unpack helper
 struct OperationRaw {
-  int op_type;  // 0 for read, 1 for write
+  int op_type;  // 0 for read, 1 for write, 2 for Replicated-read
   uint64_t key_hash;
   size_t value_size;
 
