@@ -59,13 +59,13 @@ public:
     disable = b;
   }
 
-  void total_time_ms(int total_msg) {
+  double total_time_ms(int total_msg) {
     if (disable) {
-      return;
+      return 0.0;
     }
     if (measure_probe1.size() == 0 || measure_probe2.size() == 0) {
       LOG_F(ERROR, "no metrics");
-      return;
+      return 0.0;
     }
     auto &start = *(measure_probe1.begin());
     auto &end = *(measure_probe2.rbegin());
@@ -74,6 +74,8 @@ public:
             .count();
     res *= 1e-6;
     printf("total time: %f ms, throughput: %f Kops\n", res, total_msg / res);
+
+    return total_msg / res;
   }
 
   void index_time_us() {
@@ -126,9 +128,9 @@ public:
     printf("[%s] loop %zu, interval: %f us\n", m_title.c_str(), idx, res);
   }
 
-  void average_time_us() {
+  double average_time_us() {
     if (disable) {
-      return;
+      return 0.0;
     }
     size_t probes = measure_probe2.size() - m_last_calculate_idx;
     double acc = 0.0;
@@ -148,14 +150,17 @@ public:
         min = diff;
       }
     }
+    double time = 0.0;
     if (probes > 0) {
-      double time = acc / probes;
+      time = acc / probes;
       printf("[%s] %zu points, average time: %f us, min: %f us, max: %f us\n", m_title.c_str(), probes, time, min, max);
       // printf("[%s] min: %f us, max: %f us\n", m_title.c_str(), min, max);
     } else {
       // printf("[%s] no probe points in these time\n", m_title.c_str());
     }
     m_last_calculate_idx = measure_probe2.size();
+
+    return time;
   }
 };
 

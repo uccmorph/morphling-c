@@ -759,10 +759,12 @@ int main(int argc, char **argv) {
   }
 
   gauge.set_probe2();
-  gauge.total_time_ms(cfg_msg_nums);
-
+  double throughput = gauge.total_time_ms(cfg_msg_nums);
+  double average_latency = 0.0;
   for (auto &cg : g_latency_gauge) {
     printf("is disable: %d\n", cg.is_disable());
-    cg.average_time_us();
+    average_latency += cg.average_time_us();
   }
+  average_latency /= g_latency_gauge.size();
+  printf("throughput, latency: (%f, %f)\n", throughput, average_latency);
 }
